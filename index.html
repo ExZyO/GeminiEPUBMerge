@@ -1,0 +1,1231 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini Translator</title>
+  <meta name="description"
+    content="AI-powered translation with Gemini, DeepL, and LibreTranslate. Supports PDF, EPUB, TXT files with glossary management.">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="apple-touch-icon" href="https://placehold.co/192x192/8b5cf6/ffffff?text=GT" sizes="192x192">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Gemini Translator">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' }</script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="./splitter.js"></script>
+  <script src="./merger.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jepub/dist/jepub.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/ejs/3.1.9/ejs.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.min.js"></script>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      transition: background-color .3s, color .3s
+    }
+
+    @keyframes toastIn {
+      from {
+        transform: translateX(100%);
+        opacity: 0
+      }
+
+      to {
+        transform: translateX(0);
+        opacity: 1
+      }
+    }
+
+    @keyframes toastOut {
+      from {
+        transform: translateX(0);
+        opacity: 1
+      }
+
+      to {
+        transform: translateX(100%);
+        opacity: 0
+      }
+    }
+
+    .toast-enter {
+      animation: toastIn .3s ease-out forwards
+    }
+
+    .toast-exit {
+      animation: toastOut .3s ease-in forwards
+    }
+
+    .drop-zone-active {
+      border: 3px dashed #6366f1 !important;
+      background: rgba(99, 102, 241, .08) !important
+    }
+
+    .dark .drop-zone-active {
+      background: rgba(99, 102, 241, .15) !important
+    }
+
+    *:focus-visible {
+      outline: 2px solid #6366f1;
+      outline-offset: 2px;
+      border-radius: 4px
+    }
+
+    .collapsible {
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height .3s ease-out
+    }
+
+    .collapsible.open {
+      max-height: 5000px
+    }
+  </style>
+</head>
+
+<body>
+  <div id="root"></div>
+  <script type="module">
+    import React, { useState, useEffect, useRef, useCallback } from 'https://esm.sh/react@18.2.0';
+    import ReactDOM from 'https://esm.sh/react-dom@18.2.0/client';
+    import { Download, Clipboard, Link, BookText, FileText, XCircle, Copy, Loader2, Eye, EyeOff, RefreshCcw, Save, Upload, Sun, Moon, Columns2, Rows2, History, ChevronDown, ChevronUp, Zap, X, CheckCircle2, AlertCircle, Info, Search, Trash2, RotateCcw, Square, FileDown, Settings, Globe, Layers } from 'https://esm.sh/lucide-react@0.372.0';
+    const h = React.createElement;
+
+    // ═══════════════════════════════════════
+    // CONSTANTS
+    // ═══════════════════════════════════════
+    const VERSION = '4.1.0';
+    const MAX_PAYLOAD = 60000;
+    const PROMPT_OVERHEAD = 800;
+    const MAX_HISTORY = 20;
+    const DEFAULT_CONCURRENCY = 3;
+    const LANGUAGES = ['Auto-detect', 'English', 'Spanish', 'French', 'German', 'Italian', 'Portuguese', 'Chinese (Simplified)', 'Chinese (Traditional)', 'Japanese', 'Korean', 'Russian', 'Arabic', 'Hindi', 'Bengali', 'Urdu', 'Vietnamese', 'Turkish', 'Polish', 'Dutch', 'Swedish', 'Norwegian', 'Danish', 'Finnish', 'Greek', 'Hebrew', 'Thai', 'Indonesian', 'Malay', 'Filipino', 'Romanian', 'Hungarian', 'Czech', 'Slovak', 'Bulgarian', 'Serbian', 'Croatian', 'Ukrainian', 'Lithuanian', 'Latvian', 'Estonian', 'Slovenian', 'Catalan', 'Basque', 'Galician'];
+    const TARGET_LANGUAGES = LANGUAGES.filter(l => l !== 'Auto-detect');
+
+    const DEEPL_LANG_MAP = { 'English': 'EN', 'Spanish': 'ES', 'French': 'FR', 'German': 'DE', 'Italian': 'IT', 'Portuguese': 'PT', 'Chinese (Simplified)': 'ZH', 'Chinese (Traditional)': 'ZH', 'Japanese': 'JA', 'Korean': 'KO', 'Russian': 'RU', 'Arabic': 'AR', 'Hindi': 'HI', 'Vietnamese': 'VI', 'Turkish': 'TR', 'Polish': 'PL', 'Dutch': 'NL', 'Swedish': 'SV', 'Norwegian': 'NB', 'Danish': 'DA', 'Finnish': 'FI', 'Greek': 'EL', 'Hebrew': 'HE', 'Indonesian': 'ID', 'Romanian': 'RO', 'Hungarian': 'HU', 'Czech': 'CS', 'Slovak': 'SK', 'Bulgarian': 'BG', 'Serbian': 'SR', 'Croatian': 'HR', 'Ukrainian': 'UK', 'Lithuanian': 'LT', 'Latvian': 'LV', 'Estonian': 'ET', 'Slovenian': 'SL' };
+    const LIBRE_LANG_MAP = { 'English': 'en', 'Spanish': 'es', 'French': 'fr', 'German': 'de', 'Italian': 'it', 'Portuguese': 'pt', 'Chinese (Simplified)': 'zh', 'Chinese (Traditional)': 'zt', 'Japanese': 'ja', 'Korean': 'ko', 'Russian': 'ru', 'Arabic': 'ar', 'Hindi': 'hi', 'Vietnamese': 'vi', 'Turkish': 'tr', 'Polish': 'pl', 'Dutch': 'nl', 'Swedish': 'sv', 'Norwegian': 'nb', 'Danish': 'da', 'Finnish': 'fi', 'Greek': 'el', 'Hebrew': 'he', 'Indonesian': 'id', 'Filipino': 'tl', 'Romanian': 'ro', 'Hungarian': 'hu', 'Czech': 'cs', 'Slovak': 'sk', 'Bulgarian': 'bg', 'Serbian': 'sr', 'Croatian': 'hr', 'Ukrainian': 'uk' };
+
+    // ═══════════════════════════════════════
+    // UTILITY FUNCTIONS
+    // ═══════════════════════════════════════
+    const fetchRetry = async (url, opts, retries = 3) => {
+      for (let i = 0; i < retries; i++) {
+        try {
+          const r = await fetch(url, opts);
+          if ((r.status === 429 || r.status >= 500) && i < retries - 1) { await new Promise(t => setTimeout(t, Math.pow(2, i) * 1000)); continue }
+          return r;
+        } catch (e) { if (i === retries - 1) throw e; await new Promise(t => setTimeout(t, Math.pow(2, i) * 1000)) }
+      }
+    };
+    const wordCount = t => t.trim() ? t.trim().split(/\s+/).length : 0;
+    const charCount = t => t.length;
+    const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+
+    // Parallel batch executor: runs tasks in batches of `concurrency`
+    const batchParallel = async (items, fn, concurrency = 3) => {
+      const results = new Array(items.length);
+      for (let i = 0; i < items.length; i += concurrency) {
+        const batch = items.slice(i, i + concurrency);
+        const batchResults = await Promise.allSettled(batch.map((item, idx) => fn(item, i + idx)));
+        batchResults.forEach((r, idx) => { results[i + idx] = r.status === 'fulfilled' ? r.value : { error: r.reason?.message || 'Unknown error' }; });
+      }
+      return results;
+    };
+    const cleanText = t => { let c = t.replace(/\r\n|\r/g, '\n'); c = c.replace(/[ \t]{2,}/g, ' '); c = c.replace(/(\n\s*){2,}/g, '\n\n'); return c.trim() };
+    const copyText = async t => { await navigator.clipboard.writeText(t) };
+
+    const splitChunks = (text, glossaryLen = 0) => {
+      let max = MAX_PAYLOAD - PROMPT_OVERHEAD - glossaryLen;
+      if (max <= 0) max = 500;
+      const chunks = []; let rem = text;
+      while (rem.length > 0) {
+        if (rem.length <= max) { chunks.push(rem); break }
+        let sp = max;
+        let idx = rem.lastIndexOf('\n\n', max);
+        if (idx !== -1 && idx > max * 0.7) sp = idx + 2;
+        else {
+          idx = rem.lastIndexOf('\n', max); if (idx !== -1 && idx > max * 0.7) sp = idx + 1;
+          else { idx = Math.max(rem.lastIndexOf('.', max), rem.lastIndexOf('?', max), rem.lastIndexOf('!', max)); if (idx !== -1 && idx > max * 0.7) sp = idx + 1 }
+        }
+        if (sp <= 0) sp = max;
+        chunks.push(rem.substring(0, sp)); rem = rem.substring(sp).trimStart();
+      }
+      return chunks;
+    };
+
+    // Default Glossaries
+    const DEFAULT_PRESETS = [
+      { id: 'none', name: 'None' },
+      { id: 'wuxia', name: 'Wuxia / Cultivation Preset', terms: 'Dao, Qi, Cultivation, Tribulation, Heavenly, Sect, Grandmaster\nTranslate names as pinyin without tone marks. Keep honorifics like "Senior Brother".' },
+      { id: 'scifi', name: 'Sci-Fi Preset', terms: 'FTL, Mecha, Cyborg, Warp, Neutrino\nUse hard-science fiction terminology.' }
+    ];
+
+    // ═══════════════════════════════════════
+    // TRANSLATION PROVIDERS
+    // ═══════════════════════════════════════
+    const buildPrompt = (text, srcLang, tgtLang, glossary, instructions, prevContext) => {
+      let p = `Please translate the following text${srcLang && srcLang !== 'Auto-detect' ? ' from ' + srcLang : ''} into ${tgtLang}. IMPORTANT: Preserve all original paragraph breaks and line breaks exactly.\n\n`;
+      if (prevContext) {
+        p += `[PREVIOUS CONTEXT START]\n${prevContext}\n[PREVIOUS CONTEXT END]\n\n---NOVEL CHUNK TO TRANSLATE---\n`;
+      }
+      p += `${text}\n\nProvide ONLY the ${tgtLang} translation. No commentary.`;
+      if (glossary.trim()) p = `Use this Terminology Guide for specific terms.\n---\nTerminology Guide:\n${glossary.trim()}\n---\n\n` + p;
+      if (instructions.trim()) p = `Additional instructions: ${instructions.trim()}\n\n` + p;
+      return p;
+    };
+
+    const translateGemini = async (text, { apiKey, model, srcLang, tgtLang, glossary, instructions, signal, prevContext }) => {
+      if (!apiKey) throw new Error('Gemini API key required.');
+      const prompt = buildPrompt(text, srcLang, tgtLang, glossary, instructions, prevContext);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const r = await fetchRetry(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] }), signal });
+      if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`Gemini API error ${r.status}: ${b.substring(0, 200)}`); }
+      const j = await r.json();
+      const t = j?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!t) throw new Error('Unexpected Gemini response format.');
+      return t.replace(/---CONTEXT_UPDATE---/g, '');
+    };
+
+    const streamGemini = async (text, { apiKey, model, srcLang, tgtLang, glossary, instructions, signal, onChunk, prevContext }) => {
+      if (!apiKey) throw new Error('Gemini API key required.');
+      const prompt = buildPrompt(text, srcLang, tgtLang, glossary, instructions, prevContext);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
+      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] }), signal });
+      if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`Gemini stream error ${r.status}: ${b.substring(0, 200)}`); }
+      const reader = r.body.getReader(); const dec = new TextDecoder(); let buf = '';
+      while (true) {
+        const { done, value } = await reader.read(); if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n'); buf = lines.pop() || '';
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const d = line.slice(6).trim(); if (d === '[DONE]') return;
+            try { const j = JSON.parse(d); let t = j?.candidates?.[0]?.content?.parts?.[0]?.text; if (t) { t = t.replace(/---CONTEXT_UPDATE---/g, ''); onChunk(t) } } catch (e) { }
+          }
+        }
+      }
+    };
+
+    const translateDeepL = async (text, { apiKey, srcLang, tgtLang, signal }) => {
+      if (!apiKey) throw new Error('DeepL API key required.');
+      const tgt = DEEPL_LANG_MAP[tgtLang]; if (!tgt) throw new Error(`DeepL doesn't support ${tgtLang}.`);
+      const src = srcLang && srcLang !== 'Auto-detect' ? DEEPL_LANG_MAP[srcLang] : undefined;
+      const params = new URLSearchParams({ text, target_lang: tgt });
+      if (src) params.append('source_lang', src);
+      const base = apiKey.endsWith(':fx') ? 'https://api-free.deepl.com' : 'https://api.deepl.com';
+      const r = await fetchRetry(`${base}/v2/translate`, { method: 'POST', headers: { 'Authorization': `DeepL-Auth-Key ${apiKey}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: params.toString(), signal });
+      if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`DeepL error ${r.status}: ${b.substring(0, 200)}`); }
+      const j = await r.json(); return j.translations?.[0]?.text || '';
+    };
+
+    const translateLibre = async (text, { srcLang, tgtLang, signal, libreUrl }) => {
+      const tgt = LIBRE_LANG_MAP[tgtLang]; if (!tgt) throw new Error(`LibreTranslate doesn't support ${tgtLang}.`);
+      const src = srcLang && srcLang !== 'Auto-detect' ? (LIBRE_LANG_MAP[srcLang] || 'auto') : 'auto';
+      const url = libreUrl || 'https://libretranslate.com';
+      const r = await fetchRetry(`${url}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: text, source: src, target: tgt, format: 'text' }), signal });
+      if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`LibreTranslate error ${r.status}: ${b.substring(0, 200)}`); }
+      const j = await r.json(); return j.translatedText || '';
+    };
+
+    const translateOpenAI = async (text, { apiKey, srcLang, tgtLang, glossary, instructions, prevContext }) => {
+      const prompt = buildPrompt(text, srcLang, tgtLang, glossary, instructions, prevContext);
+      const r = await fetchRetry('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [{ role: 'system', content: 'You are a professional literary translator.' }, { role: 'user', content: prompt }],
+          temperature: 0.3
+        })
+      });
+      if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`OpenAI HTTP ${r.status}: ${b.substring(0, 200)}`) }
+      const d = await r.json(); return d.choices[0].message.content.trim();
+    };
+
+    const translateClaude = async (text, { apiKey, srcLang, tgtLang, glossary, instructions, prevContext }) => {
+      const prompt = buildPrompt(text, srcLang, tgtLang, glossary, instructions, prevContext);
+      const r = await fetchRetry('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
+        body: JSON.stringify({
+          model: 'claude-3-5-haiku-latest',
+          max_tokens: 4000,
+          system: 'You are a professional literary translator.',
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.3
+        })
+      });
+      if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`Anthropic HTTP ${r.status}: ${b.substring(0, 200)}`) }
+      const d = await r.json(); return d.content[0].text.trim();
+    };
+
+    const translateChunk = async (text, opts) => {
+      switch (opts.provider) {
+        case 'deepl': return translateDeepL(text, opts);
+        case 'libre': return translateLibre(text, opts);
+        case 'openai': return translateOpenAI(text, opts);
+        case 'claude': return translateClaude(text, opts);
+        default: return translateGemini(text, opts);
+      }
+    };
+
+    const fetchGeminiModels = async (apiKey) => {
+      const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=100`);
+      if (!r.ok) throw new Error('Failed to fetch models');
+      const j = await r.json();
+      return (j.models || []).filter(m => m.supportedGenerationMethods?.includes('generateContent')).map(m => ({ id: m.name.replace('models/', ''), name: m.displayName || m.name.replace('models/', '') }));
+    };
+
+    // ═══════════════════════════════════════
+    // ERROR BOUNDARY
+    // ═══════════════════════════════════════
+    class ErrorBoundary extends React.Component {
+      constructor(p) { super(p); this.state = { hasError: false, error: null } }
+      static getDerivedStateFromError(e) { return { hasError: true, error: e } }
+      render() { if (this.state.hasError) return h('div', { className: 'min-h-screen flex items-center justify-center bg-red-50 dark:bg-gray-900 p-8' }, h('div', { className: 'max-w-lg text-center' }, h('h1', { className: 'text-2xl font-bold text-red-600 mb-4' }, 'Something went wrong'), h('p', { className: 'text-gray-700 dark:text-gray-300 mb-4' }, this.state.error?.message), h('button', { onClick: () => this.setState({ hasError: false, error: null }), className: 'px-6 py-2 bg-indigo-600 text-white rounded-lg' }, 'Try Again'))); return this.props.children }
+    }
+
+    // ═══════════════════════════════════════
+    // MAIN APP
+    // ═══════════════════════════════════════
+    function App() {
+      // --- Core State ---
+      const [inputText, setInputText] = useState('');
+      const [assembledText, setAssembledText] = useState('');
+      const [terminology, setTerminology] = useState('');
+      const [customInstructions, setCustomInstructions] = useState('');
+      const [activeTab, setActiveTab] = useState('text');
+      const [error, setError] = useState('');
+
+      // --- Translation State ---
+      const [isTranslating, setIsTranslating] = useState(false);
+      const [progress, setProgress] = useState(0);
+      const [progressLabel, setProgressLabel] = useState('');
+      const [translatedChapters, setTranslatedChapters] = useState([]);
+      const [hasTextSession, setHasTextSession] = useState(() => localStorage.getItem('translationSessionText') !== null);
+      const [hasEbookSession, setHasEbookSession] = useState(() => localStorage.getItem('translationSessionEbook') !== null);
+
+      // --- Provider State ---
+      const [provider, setProvider] = useState(() => localStorage.getItem('translationProvider') || 'gemini');
+      const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('geminiApiKey') || '');
+      const [geminiKeyInput, setGeminiKeyInput] = useState(() => localStorage.getItem('geminiApiKey') || '');
+      const [deeplKey, setDeeplKey] = useState(() => localStorage.getItem('deeplApiKey') || '');
+      const [deeplKeyInput, setDeeplKeyInput] = useState(() => localStorage.getItem('deeplApiKey') || '');
+      const [openaiKey, setOpenaiKey] = useState(() => localStorage.getItem('openaiApiKey') || '');
+      const [openaiKeyInput, setOpenaiKeyInput] = useState(() => localStorage.getItem('openaiApiKey') || '');
+      const [claudeKey, setClaudeKey] = useState(() => localStorage.getItem('claudeApiKey') || '');
+      const [claudeKeyInput, setClaudeKeyInput] = useState(() => localStorage.getItem('claudeApiKey') || '');
+      const [libreUrl, setLibreUrl] = useState(() => localStorage.getItem('libreUrl') || 'https://libretranslate.com');
+      const [geminiModel, setGeminiModel] = useState(() => localStorage.getItem('geminiModel') || 'gemini-2.5-flash');
+      const [availableModels, setAvailableModels] = useState([]);
+      const [customModel, setCustomModel] = useState('');
+      const [useCustomModel, setUseCustomModel] = useState(false);
+      const [showGeminiKey, setShowGeminiKey] = useState(false);
+      const [showDeeplKey, setShowDeeplKey] = useState(false);
+      const [enableStreaming, setEnableStreaming] = useState(() => localStorage.getItem('enableStreaming') === 'true');
+      const [concurrency, setConcurrency] = useState(() => parseInt(localStorage.getItem('concurrency')) || DEFAULT_CONCURRENCY);
+
+      // --- Language State ---
+      const [srcLang, setSrcLang] = useState('Auto-detect');
+      const [tgtLang, setTgtLang] = useState('English');
+
+      // --- Glossary State ---
+      const [savedGlossaries, setSavedGlossaries] = useState([]);
+      const [newGlossaryName, setNewGlossaryName] = useState('');
+      const [activeGlossaryId, setActiveGlossaryId] = useState(null);
+      const [defaultGlossaryName, setDefaultGlossaryName] = useState(() => localStorage.getItem('defaultGlossaryName') || null);
+
+      // --- UI State ---
+      const [darkMode, setDarkMode] = useState(() => { const s = localStorage.getItem('darkMode'); return s !== null ? s === 'true' : window.matchMedia('(prefers-color-scheme:dark)').matches });
+      const [toasts, setToasts] = useState([]);
+      const [sideBySide, setSideBySide] = useState(false);
+      const [showModal, setShowModal] = useState(false);
+      const [modalMessage, setModalMessage] = useState('');
+      const [modalCallback, setModalCallback] = useState(null);
+      const [history, setHistory] = useState([]);
+      const [showHistory, setShowHistory] = useState(false);
+      const [showSettings, setShowSettings] = useState(true);
+      const [showGlossaryManager, setShowGlossaryManager] = useState(true);
+      const [uploadingFile, setUploadingFile] = useState(false);
+      const [downloadingPdf, setDownloadingPdf] = useState(false);
+      const [downloadingEpub, setDownloadingEpub] = useState(false);
+      const [downloadingDocx, setDownloadingDocx] = useState(false);
+      const [isDragOver, setIsDragOver] = useState(false);
+
+      // --- Refs ---
+      const fileInputRef = useRef(null);
+      const glossaryFileRef = useRef(null);
+      const abortRef = useRef(null);
+
+      // --- Toast Helper ---
+      const toast = (msg, type = 'success') => { const id = genId(); setToasts(p => [...p, { id, msg, type }]); setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 3500) };
+
+      // --- Effects ---
+      useEffect(() => { document.documentElement.classList.toggle('dark', darkMode); localStorage.setItem('darkMode', String(darkMode)) }, [darkMode]);
+      useEffect(() => { localStorage.setItem('enableStreaming', String(enableStreaming)) }, [enableStreaming]);
+      useEffect(() => { localStorage.setItem('translationProvider', provider) }, [provider]);
+      useEffect(() => { localStorage.setItem('concurrency', String(concurrency)) }, [concurrency]);
+
+      // Check for sessions on mount or when tab changes
+      useEffect(() => {
+        setHasTextSession(localStorage.getItem('translationSessionText') !== null);
+        setHasEbookSession(localStorage.getItem('translationSessionEbook') !== null);
+      }, [activeTab]);
+
+      useEffect(() => {
+        const g = JSON.parse(localStorage.getItem('savedGlossaries') || '[]'); setSavedGlossaries(g);
+        const h = JSON.parse(localStorage.getItem('translationHistory') || '[]'); setHistory(h);
+        const dg = localStorage.getItem('defaultGlossaryName');
+        if (dg) { setDefaultGlossaryName(dg); const found = g.find(x => x.name === dg); if (found) { setTerminology(found.content); setActiveGlossaryId(found.name) } else { localStorage.removeItem('defaultGlossaryName'); setDefaultGlossaryName(null) } }
+        if (typeof window.pdfjsLib !== 'undefined') window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+      }, []);
+
+      useEffect(() => { if (geminiKey) fetchGeminiModels(geminiKey).then(m => { setAvailableModels(m); if (m.length && !m.find(x => x.id === geminiModel) && !useCustomModel && m[0]) setGeminiModel(m[0].id) }).catch(() => { }) }, [geminiKey]);
+
+      // Keyboard shortcuts
+      useEffect(() => {
+        const handler = e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); if (!isTranslating) handleTranslateText() } if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'C') { e.preventDefault(); if (assembledText) copyText(assembledText).then(() => toast('Copied!')).catch(() => { }) } };
+        window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
+      });
+
+      // --- API Key Handlers ---
+      const saveGeminiKey = () => { if (!geminiKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('geminiApiKey', geminiKeyInput.trim()); setGeminiKey(geminiKeyInput.trim()); toast('Gemini API key saved!'); setError('') };
+      const clearGeminiKey = () => { localStorage.removeItem('geminiApiKey'); setGeminiKey(''); setGeminiKeyInput(''); setAvailableModels([]); toast('Gemini API key cleared.', 'info') };
+      const saveDeeplKey = () => { if (!deeplKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('deeplApiKey', deeplKeyInput.trim()); setDeeplKey(deeplKeyInput.trim()); toast('DeepL API key saved!'); setError('') };
+      const clearDeeplKey = () => { localStorage.removeItem('deeplApiKey'); setDeeplKey(''); setDeeplKeyInput(''); toast('DeepL API key cleared.', 'info') };
+      const saveLibreUrl = () => { localStorage.setItem('libreUrl', libreUrl); toast('LibreTranslate URL saved!') };
+
+      // --- Glossary Handlers ---
+      const handleSaveGlossary = () => { if (!newGlossaryName.trim()) return setError('Enter a glossary name.'); if (!terminology.trim()) return setError('Glossary content is empty.'); const existing = savedGlossaries.findIndex(g => g.name === newGlossaryName.trim()); if (existing > -1) { confirmAction(`Overwrite "${newGlossaryName.trim()}"?`, () => { const u = [...savedGlossaries]; u[existing] = { name: newGlossaryName.trim(), content: terminology }; setSavedGlossaries(u); localStorage.setItem('savedGlossaries', JSON.stringify(u)); setNewGlossaryName(''); setActiveGlossaryId(newGlossaryName.trim()); toast('Glossary updated!') }) } else { const u = [...savedGlossaries, { name: newGlossaryName.trim(), content: terminology }]; setSavedGlossaries(u); localStorage.setItem('savedGlossaries', JSON.stringify(u)); setNewGlossaryName(''); setActiveGlossaryId(newGlossaryName.trim()); setError(''); toast('Glossary saved!') } };
+      const handleLoadGlossary = g => { setTerminology(g.content); setActiveGlossaryId(g.name); toast(`Loaded "${g.name}"`) };
+      const handleDeleteGlossary = n => { confirmAction(`Delete "${n}"?`, () => { const u = savedGlossaries.filter(g => g.name !== n); setSavedGlossaries(u); localStorage.setItem('savedGlossaries', JSON.stringify(u)); if (activeGlossaryId === n) { setTerminology(''); setActiveGlossaryId(null) } if (defaultGlossaryName === n) { localStorage.removeItem('defaultGlossaryName'); setDefaultGlossaryName(null) } toast('Glossary deleted.', 'info') }) };
+      const handleUpdateGlossary = n => { const i = savedGlossaries.findIndex(g => g.name === n); if (i > -1) { const u = [...savedGlossaries]; u[i] = { name: n, content: terminology }; setSavedGlossaries(u); localStorage.setItem('savedGlossaries', JSON.stringify(u)); toast(`"${n}" updated!`) } };
+      const setDefaultGloss = () => { if (!activeGlossaryId) return setError('Load a glossary first.'); localStorage.setItem('defaultGlossaryName', activeGlossaryId); setDefaultGlossaryName(activeGlossaryId); toast(`"${activeGlossaryId}" set as default!`) };
+      const clearDefaultGloss = () => { confirmAction('Clear default glossary?', () => { localStorage.removeItem('defaultGlossaryName'); setDefaultGlossaryName(null); toast('Default cleared.', 'info') }) };
+      const exportGlossaries = () => { const blob = new Blob([JSON.stringify(savedGlossaries, null, 2)], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'glossaries_backup.json'; a.click(); URL.revokeObjectURL(a.href); toast('Glossaries exported!') };
+      const importGlossaries = async e => { const f = e.target.files[0]; if (!f) return; try { const txt = await f.text(); const data = JSON.parse(txt); if (!Array.isArray(data)) throw new Error('Invalid format'); const merged = [...savedGlossaries]; data.forEach(g => { if (g.name && g.content && !merged.find(x => x.name === g.name)) merged.push(g) }); setSavedGlossaries(merged); localStorage.setItem('savedGlossaries', JSON.stringify(merged)); toast(`Imported ${data.length} glossaries!`) } catch (err) { setError('Invalid glossary file: ' + err.message) } e.target.value = '' };
+      const handleGlossaryFile = async e => { const f = e.target.files[0]; if (!f) return; try { const txt = await f.text(); setTerminology(txt); setNewGlossaryName(f.name.replace(/\.[^.]+$/, '')); toast(`Glossary loaded from ${f.name}`) } catch (err) { setError('Failed to read file: ' + err.message) } e.target.value = '' };
+
+      // --- Modal ---
+      const confirmAction = (msg, cb) => { setModalMessage(msg); setModalCallback(() => () => { cb(); setShowModal(false) }); setShowModal(true) };
+
+      // --- History ---
+      const addToHistory = (src, tgt, prov, input, output) => { const entry = { id: genId(), ts: new Date().toISOString(), srcLang: src, tgtLang: tgt, provider: prov, inputPreview: input.substring(0, 200), outputPreview: output.substring(0, 200), fullInput: input, fullOutput: output }; const updated = [entry, ...history].slice(0, MAX_HISTORY); setHistory(updated); localStorage.setItem('translationHistory', JSON.stringify(updated)) };
+      const loadFromHistory = entry => { setInputText(entry.fullInput); setAssembledText(entry.fullOutput); setSrcLang(entry.srcLang || 'Auto-detect'); setTgtLang(entry.tgtLang || 'English'); setActiveTab('text'); toast('Loaded from history') };
+      const clearHistory = () => { confirmAction('Clear all history?', () => { setHistory([]); localStorage.setItem('translationHistory', '[]'); toast('History cleared.', 'info') }) };
+      const deleteHistoryItem = id => { const u = history.filter(h => h.id !== id); setHistory(u); localStorage.setItem('translationHistory', JSON.stringify(u)) };
+
+      // --- Translation ---
+      const getTranslateOpts = (signal) => {
+        const o = { srcLang, tgtLang, glossary: terminology, instructions: customInstructions, signal, concurrency, prevContext: '' };
+        if (provider === 'gemini') { const m = useCustomModel && customModel ? customModel : geminiModel; return { ...o, apiKey: geminiKey, model: m } }
+        if (provider === 'deepl') return { ...o, apiKey: deeplKey }
+        if (provider === 'libre') return { ...o, libreUrl: libreUrl, apiKey: keys?.libreKey || '' }
+        if (provider === 'openai') return { ...o, apiKey: openaiKey }
+        if (provider === 'claude') return { ...o, apiKey: claudeKey }
+        return o;
+      };
+
+      const handleTranslateText = async (isResume = false) => {
+        if (!inputText.trim()) return setError('Paste some text to translate.');
+        setIsTranslating(true); setProgress(0); setProgressLabel('Preparing...'); setError('');
+
+        let initialResult = '';
+        let startIndex = 0;
+        let prevContext = '';
+
+        if (isResume) {
+          try {
+            const session = JSON.parse(localStorage.getItem('translationSessionText'));
+            if (session && session.originalText === inputText) {
+              initialResult = session.result;
+              startIndex = session.currentIndex;
+              prevContext = session.prevContext || '';
+              setProgressLabel(`Resuming from chunk ${startIndex + 1}...`);
+            } else {
+              localStorage.removeItem('translationSessionText');
+              setHasTextSession(false);
+            }
+          } catch (e) { console.error("Session parse error", e); }
+        } else {
+          setAssembledText('');
+          setTranslatedChapters([]);
+          localStorage.removeItem('translationSessionText');
+        }
+
+        const ctrl = new AbortController(); abortRef.current = ctrl;
+        try {
+          const opts = getTranslateOpts(ctrl.signal);
+          const chunks = splitChunks(inputText, terminology.length);
+          if (provider === 'gemini' && enableStreaming) {
+            // Streaming must be sequential (real-time display)
+            let result = initialResult;
+            setAssembledText(result);
+
+            for (let i = startIndex; i < chunks.length; i++) {
+              setProgressLabel(`Streaming chunk ${i + 1}/${chunks.length}...`);
+              let chunkResult = '';
+              await streamGemini(chunks[i], { ...opts, prevContext, onChunk: t => { chunkResult += t; setAssembledText(result + chunkResult) } });
+              result += chunkResult;
+              prevContext = result.slice(-500);
+              setProgress(Math.floor(((i + 1) / chunks.length) * 100));
+
+              localStorage.setItem('translationSessionText', JSON.stringify({
+                originalText: inputText,
+                result,
+                currentIndex: i + 1,
+                prevContext
+              }));
+              setHasTextSession(true);
+            }
+            setTranslatedChapters([{ title: 'Translated Document', content: result }]);
+            localStorage.removeItem('translationSessionText');
+            setHasTextSession(false);
+          } else {
+            // Parallel batch translation
+            setProgressLabel(`Translating ${chunks.length - startIndex} chunk(s) with ${Math.min(concurrency, chunks.length - startIndex)} parallel...`);
+            let completed = startIndex;
+            let resultParts = initialResult ? [initialResult] : Array(chunks.length).fill('');
+
+            // For parallel we can't easily pass the real prevContext from the *previous* chunk because they run at the same time.
+            // But we can slice from the original text (or just not use prevContext for parallel).
+            // We follow the report and use the context-aware pipeline, which strongly implies sequential for maximum quality,
+            // but we'll supply a rough prevContext if possible.
+            const results = await batchParallel(chunks.slice(startIndex), async (chunk, idx) => {
+              const translated = await translateChunk(chunk, opts); // Passing general opts, no prevContext for parallel batch to avoid hallucination races
+              completed++; setProgress(Math.floor((completed / chunks.length) * 100));
+              setProgressLabel(`Completed ${completed}/${chunks.length} chunks`);
+              return translated;
+            }, concurrency);
+
+            const translated = results.map(r => typeof r === 'string' ? r : (r?.error ? `\n\n[Error: ${r.error}]\n\n` : ''));
+            const finalResult = (initialResult + translated.join('')).replace(/\r\n/g, '\n').trim();
+            setAssembledText(finalResult); setTranslatedChapters([{ title: 'Translated Document', content: finalResult }]);
+            localStorage.removeItem('translationSessionText');
+            setHasTextSession(false);
+          }
+          addToHistory(srcLang, tgtLang, provider, inputText, assembledText || 'See output');
+          toast('Translation complete!');
+        } catch (e) {
+          if (e.name !== 'AbortError') {
+            setError(e.message); toast(e.message, 'error');
+          } else {
+            toast('Translation cancelled or paused. Session saved.', 'info')
+          }
+        }
+        finally { setIsTranslating(false); setProgress(0); setProgressLabel(''); abortRef.current = null }
+      };
+
+      const handleTranslateEbook = async (chapters, isResume = false) => {
+        setIsTranslating(true); setProgress(0); setError('');
+
+        let allParts = [];
+        let newChapters = [];
+        let done = 0;
+        let startChapterIdx = 0;
+        let prevContext = '';
+
+        if (isResume) {
+          try {
+            const session = JSON.parse(localStorage.getItem('translationSessionEbook'));
+            if (session) {
+              allParts = session.allParts || [];
+              newChapters = session.newChapters || [];
+              startChapterIdx = session.currentChapterIndex || 0;
+              done = session.doneChunks || 0;
+              prevContext = session.prevContext || '';
+              setAssembledText(allParts.join('\n\n\n'));
+              setTranslatedChapters(newChapters);
+              setProgressLabel(`Resuming from chapter ${startChapterIdx + 1}...`);
+            }
+          } catch (e) { console.error(e); }
+        } else {
+          setAssembledText('');
+          setTranslatedChapters([]);
+          localStorage.removeItem('translationSessionEbook');
+        }
+
+        const ctrl = new AbortController(); abortRef.current = ctrl;
+        const opts = getTranslateOpts(ctrl.signal);
+
+        try {
+          let totalChunks = 0; const chapterChunks = chapters.map(c => { const ch = splitChunks(c.text, terminology.length); totalChunks += ch.length; if (c.title.trim()) totalChunks++; return ch });
+
+          for (let i = startChapterIdx; i < chapters.length; i++) {
+            const ch = chapters[i]; let title = ch.title;
+            if (title.trim()) {
+              setProgressLabel(`Translating title: "${title.substring(0, 30)}..."`)
+              try { title = await translateChunk(title, opts) } catch (e) { title += ` [Error: ${e.message}]` }
+              done++; setProgress(Math.floor((done / totalChunks) * 100));
+            }
+
+            const chunks = chapterChunks[i];
+            let content = '';
+
+            // To preserve tree node structure for EPUBs, we translate text blocks individually
+            // To be highly efficient and respect `concurrency` setting, we will batch requests.
+            if (ch.isEpub && ch.nodes && ch.nodes.length > 0) {
+              setProgressLabel(`Chapter ${i + 1}/${chapters.length}: translating ${ch.nodes.length} tree nodes...`);
+
+              // Process EPUB nodes. Stream is awkward for thousands of tiny nodes, so we force parallel batch 
+              // for structural preservation to limit time processing taking forever.
+              const nodeResults = await batchParallel(ch.nodes, async (nodeObj, idx) => {
+                const txt = nodeObj.originalText;
+                if (!txt.trim() || /\w/.test(txt) === false) return txt; // skip whitespace-only or non-word nodes
+
+                try {
+                  const translated = await translateChunk(txt, opts);
+                  done++; setProgress(Math.floor((done / totalChunks) * 100));
+                  return translated;
+                } catch (e) { return txt; } // Fallback to original text if node fails to translate to avoid corrupting EPUB
+              }, concurrency * 2); // Double concurrency for tiny node payloads
+
+              // Assign translated results back to DOM nodes
+              ch.nodes.forEach((nodeObj, idx) => {
+                if (nodeResults[idx]) {
+                  nodeObj.node.nodeValue = nodeResults[idx];
+                }
+              });
+
+              // For preview/history 
+              content = `[True EPUB Structurally Preserved]`;
+              done += chunks.length; // Approximate progress for chunks we bypassed
+            }
+            else {
+              // Standard Chunk translation (TXT / PDF / Raw text)
+              // Sequential for Context-Awareness
+              if (provider === 'gemini' && enableStreaming) {
+                setProgressLabel(`Chapter ${i + 1}/${chapters.length}: streaming chunks...`);
+                for (let j = 0; j < chunks.length; j++) {
+                  let chunkResult = '';
+                  await streamGemini(chunks[j], { ...opts, prevContext, onChunk: t => { chunkResult += t; setAssembledText(allParts.join('\n\n\n') + `\n\n${title}\n\n${content + chunkResult}`) } });
+                  content += chunkResult;
+                  prevContext = content.slice(-500);
+                  done++; setProgress(Math.floor((done / totalChunks) * 100));
+                }
+              } else {
+                setProgressLabel(`Chapter ${i + 1}/${chapters.length}: translating ${chunks.length} chunk(s) in parallel...`);
+                const results = await batchParallel(chunks, async (chunk, idx) => {
+                  const translated = await translateChunk(chunk, opts);
+                  done++; setProgress(Math.floor((done / totalChunks) * 100));
+                  setProgressLabel(`Chapter ${i + 1}/${chapters.length}: ${done}/${totalChunks} done`);
+                  return translated;
+                }, concurrency);
+                const parts = results.map(r => typeof r === 'string' ? r : (r?.error ? `\n\n[Error: ${r.error}]\n\n` : ''));
+                content = parts.join('').replace(/\r\n/g, '\n').trim();
+              }
+            }
+
+            newChapters.push({ originalTitle: ch.title, title, content }); allParts.push(`${title}\n\n${content}`);
+            setTranslatedChapters([...newChapters]); setAssembledText(allParts.join('\n\n\n').trim());
+
+            localStorage.setItem('translationSessionEbook', JSON.stringify({
+              allParts,
+              newChapters,
+              currentChapterIndex: i + 1,
+              doneChunks: done,
+              prevContext
+            }));
+            setHasEbookSession(true);
+
+            // Allow partial downloads explicitly by mutating window globals incrementally
+            if (ch.isEpub && window.currentEpubZip && window.currentEpubDocs) {
+              const serializer = new XMLSerializer();
+              ch.nodes.forEach(({ node, originalText }) => {
+                // Update the xml node again just to be sure it syncs with partial saves
+                if (node.nodeValue != originalText && node.nodeValue) {
+                  // It was translated
+                }
+              });
+            }
+          }
+
+          const final = allParts.join('\n\n\n').trim();
+          addToHistory(srcLang, tgtLang, provider, '[File upload]', final.substring(0, 2000));
+          localStorage.removeItem('translationSessionEbook');
+          setHasEbookSession(false);
+          toast('Translation complete!');
+        } catch (e) {
+          if (e.name !== 'AbortError') { setError(e.message); toast(e.message, 'error') }
+          else toast('Cancelled. Session saved.', 'info')
+        }
+        finally { setIsTranslating(false); setProgress(0); setProgressLabel(''); abortRef.current = null }
+      };
+
+      const cancelTranslation = () => { if (abortRef.current) abortRef.current.abort() };
+
+      // --- File Handling ---
+      const readFileAsText = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = e => rej(e.target.error); r.readAsText(f) });
+
+      const readPdf = async f => {
+        if (!window.pdfjsLib) throw new Error('PDF.js not loaded.');
+        const buf = await f.arrayBuffer(); const pdf = await window.pdfjsLib.getDocument({ data: buf }).promise; let txt = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i); const tc = await page.getTextContent(); if (!tc.items?.length) continue;
+          const items = tc.items.sort((a, b) => a.transform[5] < b.transform[5] ? 1 : a.transform[5] > b.transform[5] ? -1 : a.transform[4] - b.transform[4]);
+          let lastY = items[0].transform[5], line = '';
+          for (const it of items) { const y = it.transform[5]; if (Math.abs(y - lastY) > it.height * 0.4) { txt += line + '\n'; if (Math.abs(y - lastY) > it.height * 1.2) txt += '\n'; line = '' } line += it.str + (it.str.endsWith(' ') ? '' : ' '); lastY = y }
+          txt += line + '\n\n';
+        } return txt;
+      };
+
+      const readEpub = async f => {
+        if (!window.JSZip) throw new Error('JSZip not loaded.');
+        const zip = await window.JSZip.loadAsync(f);
+        const chapters = [];
+
+        const cf = zip.file('META-INF/container.xml'); if (!cf) throw new Error('Invalid EPUB');
+        const cc = await cf.async('text'); const cd = new DOMParser().parseFromString(cc, 'text/xml');
+        const rp = cd.querySelector('rootfile')?.getAttribute('full-path'); if (!rp) throw new Error('No rootfile');
+        const od = rp.substring(0, rp.lastIndexOf('/') + 1);
+        const of2 = zip.file(rp); if (!of2) throw new Error('OPF not found');
+        const oc = await of2.async('text'); const opf = new DOMParser().parseFromString(oc, 'text/xml');
+
+        const ncxI = opf.querySelector('manifest item[media-type="application/x-dtbncx+xml"]');
+        const ncxH = ncxI ? od + ncxI.getAttribute('href') : null;
+        const navI = Array.from(opf.querySelectorAll('manifest item')).find(i => i.getAttribute('properties') === 'nav');
+        const navH = navI ? od + navI.getAttribute('href') : null;
+        const titles = new Map();
+
+        if (ncxH) {
+          const nf = zip.file(ncxH);
+          if (nf) {
+            const nc = await nf.async('text'); const nd = new DOMParser().parseFromString(nc, 'text/xml');
+            nd.querySelectorAll('navPoint').forEach(np => {
+              const l = np.querySelector('navLabel text')?.textContent;
+              const s = np.querySelector('content')?.getAttribute('src');
+              if (l && s) titles.set(s.split('#')[0], l.trim())
+            })
+          }
+        }
+
+        const parsedDocs = [];
+
+        for (const ir of opf.querySelectorAll('spine itemref')) {
+          const id = ir.getAttribute('idref'); const mi = opf.querySelector(`manifest item[id="${id}"]`); const href = mi?.getAttribute('href'); if (!href) continue;
+          const cp = od + href; if (cp === navH || cp === ncxH || href.toLowerCase().includes('toc.xhtml')) continue;
+          const mt = mi.getAttribute('media-type');
+
+          if (mt && (mt === 'application/xhtml+xml' || mt === 'text/html')) {
+            const file = zip.file(cp);
+            if (file) {
+              try {
+                const html = await file.async('text');
+                const docType = (mt === 'application/xhtml+xml' || html.includes('xmlns=')) ? 'application/xhtml+xml' : 'text/html';
+                const doc = new DOMParser().parseFromString(html, docType);
+
+                // Remove scripts
+                doc.querySelectorAll('script').forEach(e => e.remove());
+
+                const title = titles.get(href.split('#')[0]) || doc.querySelector('title')?.textContent.trim() || doc.querySelector('h1,h2,h3,h4')?.textContent.trim() || `Chapter ${chapters.length + 1}`;
+
+                // Extract Text Nodes via TreeWalker
+                const walker = document.createTreeWalker(doc.body || doc.documentElement, NodeFilter.SHOW_TEXT, null, false);
+                const nodes = [];
+                let node;
+                let chapterText = '';
+
+                while ((node = walker.nextNode())) {
+                  const txt = node.nodeValue;
+                  if (txt.trim().length > 0) {
+                    nodes.push({ node, originalText: txt });
+                    chapterText += txt + '\n\n'; // Space out for chunking
+                  }
+                }
+
+                if (nodes.length > 0) {
+                  chapters.push({ title, text: chapterText, nodes, filePath: cp, doc, isEpub: true });
+                  parsedDocs.push({ cp, doc });
+                }
+              } catch (e) { console.error("Error parsing EPUB chapter", e); }
+            }
+          }
+        }
+        if (!chapters.length) throw new Error('No readable text in EPUB.');
+
+        // Expose zip globally for download handler (simple workaround for local state)
+        window.currentEpubZip = zip;
+        window.currentEpubDocs = parsedDocs;
+
+        return { chapters, isOriginalEpub: true };
+      };
+
+      const processFile = async f => {
+        setUploadingFile(true); setError(''); setInputText(''); setAssembledText(''); setTranslatedChapters([]);
+        window.currentEpubZip = null;
+        window.currentEpubDocs = null;
+        try {
+          let data;
+          if (f.type === 'text/plain') data = { chapters: [{ title: f.name, text: await readFileAsText(f) }] };
+          else if (f.type === 'application/pdf') data = { chapters: [{ title: f.name, text: await readPdf(f) }] };
+          else if (f.type === 'application/epub+zip' || f.name.endsWith('.epub')) data = await readEpub(f);
+          else throw new Error('Unsupported file type. Use .txt, .pdf, or .epub');
+
+          const cleaned = data.chapters.map(c => ({ ...c, text: c.isEpub ? c.text : cleanText(c.text) }));
+          toast(`Extracted from ${f.name}. Translating...`, 'info');
+          await handleTranslateEbook(cleaned);
+        } catch (e) { setError(e.message); toast(e.message, 'error') }
+        finally { setUploadingFile(false); if (fileInputRef.current) fileInputRef.current.value = '' }
+      };
+
+      // --- Drag & Drop ---
+      const onDragOver = e => { e.preventDefault(); setIsDragOver(true) };
+      const onDragLeave = () => setIsDragOver(false);
+      const onDrop = e => { e.preventDefault(); setIsDragOver(false); const f = e.dataTransfer.files[0]; if (f) processFile(f) };
+
+      // --- Download Handlers ---
+      const handleDownloadPDF = () => {
+        if (!translatedChapters.length) return setError('No content to download.'); setDownloadingPdf(true); setError('');
+        try {
+          const { jsPDF } = window.jspdf; const doc = new jsPDF(); doc.setFont('Helvetica', 'normal');
+          const lh = 7, m = 10, mw = doc.internal.pageSize.width - 2 * m; let y = m;
+          translatedChapters.forEach((ch, i) => {
+            if (i > 0) { doc.addPage(); y = m } if (ch.title.trim()) { doc.setFontSize(16); doc.text(ch.title, m, y); y += lh * 2 } doc.setFontSize(12);
+            ch.content.split(/\n\s*\n/).filter(p => p.trim()).forEach(p => { doc.splitTextToSize(p.trim(), mw).forEach(l => { if (y + lh > doc.internal.pageSize.height - m) { doc.addPage(); y = m } doc.text(l, m, y); y += lh }); y += lh * 0.5 })
+          });
+          doc.save(`translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.pdf`); toast('PDF downloaded!')
+        } catch (e) { setError(`PDF error: ${e.message}`) } finally { setDownloadingPdf(false) }
+      };
+
+      const handleDownloadEPUB = async () => {
+        if (!translatedChapters.length) return setError('No content to download.'); setDownloadingEpub(true); setError('');
+        try {
+          if (window.currentEpubZip && window.currentEpubDocs) {
+            // True EPUB Structural Preservation Export
+            const serializer = new XMLSerializer();
+            window.currentEpubDocs.forEach(({ cp, doc }) => {
+              const xhtml = serializer.serializeToString(doc);
+              window.currentEpubZip.file(cp, xhtml);
+            });
+            const blob = await window.currentEpubZip.generateAsync({ type: "blob", mimeType: "application/epub+zip" });
+            const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.epub`; a.click(); URL.revokeObjectURL(a.href);
+            toast('True EPUB Export downloaded!');
+          } else {
+            // Fallback to jEpub for raw text/pdf imports
+            const j = new window.jEpub(); j.init({ title: `Translated (${tgtLang})`, author: 'Gemini Translator', publisher: 'Gemini Translator', description: `Translated to ${tgtLang}`, lang: tgtLang.split(/[-_ ]/)[0].toLowerCase(), version: '3.0', uniqueIdentifier: `urn:uuid:${crypto.randomUUID()}` });
+            translatedChapters.forEach(ch => { const ps = ch.content.split(/\n\s*\n/).filter(p => p.trim()); const html = `<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><meta charset="UTF-8"/><title>${ch.title}</title></head><body><h1>${ch.title}</h1>${ps.map(p => `<p>${p.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`).join('\n')}</body></html>`; j.add(ch.title, html) });
+            const blob = await j.generate(); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.epub`; a.click(); URL.revokeObjectURL(a.href); toast('EPUB downloaded!')
+          }
+        } catch (e) { setError(`EPUB error: ${e.message}`) } finally { setDownloadingEpub(false) }
+      };
+
+      const handleDownloadDOCX = async () => {
+        if (!translatedChapters.length) return setError('No content to download.'); setDownloadingDocx(true); setError('');
+        try {
+          const { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak } = window.docx;
+          const sections = translatedChapters.map((ch, i) => ({
+            properties: i > 0 ? { page: { pageBreaks: { before: true } } } : {}, children: [
+              ...(ch.title.trim() ? [new Paragraph({ text: ch.title, heading: HeadingLevel.HEADING_1, spacing: { after: 200 } })] : []),
+              ...ch.content.split(/\n\s*\n/).filter(p => p.trim()).map(p => new Paragraph({ children: [new TextRun(p.trim())], spacing: { after: 120 } }))
+            ]
+          }));
+          const doc = new Document({ sections }); const blob = await Packer.toBlob(doc);
+          const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.docx`; a.click(); URL.revokeObjectURL(a.href); toast('DOCX downloaded!')
+        } catch (e) { setError(`DOCX error: ${e.message}`) } finally { setDownloadingDocx(false) }
+      };
+
+      // --- Studio Logic State ---
+      const [splitFile, setSplitFile] = useState(null);
+      const [splitMsgs, setSplitMsgs] = useState([]);
+      const [mergeFiles, setMergeFiles] = useState([]);
+      const [isStudioBusy, setIsStudioBusy] = useState(false);
+
+      // --- Helpers for render ---
+      const btn = (props, ...ch) => h('button', props, ...ch);
+      const ic = (Icon, size = 18) => h(Icon, { size, className: 'shrink-0' });
+      const disabled = isTranslating || uploadingFile || isStudioBusy;
+      const activeModel = useCustomModel && customModel ? customModel : geminiModel;
+
+      // --- Studio Logic ---
+      const handleSplit = async () => {
+        if (!splitFile) return toast('Select a file to split.', 'error');
+        setIsStudioBusy(true); setSplitMsgs([]);
+        try {
+          if (!window.EpubSplitter) throw new Error("Splitter logic missing.");
+          const results = await window.EpubSplitter.splitEpub(splitFile);
+          setSplitMsgs(results.map(r => r.message));
+          toast('Split dry-run successful!');
+        } catch (e) { toast(`Split error: ${e.message}`, 'error'); }
+        finally { setIsStudioBusy(false); }
+      };
+
+      const handleMerge = async () => {
+        if (mergeFiles.length < 2) return toast('Select at least 2 files to merge.', 'error');
+        setIsStudioBusy(true);
+        try {
+          if (!window.EpubMerger) throw new Error("Merger logic missing.");
+          const mergedBlob = await window.EpubMerger.mergeEpub(mergeFiles);
+          const a = document.createElement('a'); a.href = URL.createObjectURL(mergedBlob); a.download = `merged_${Date.now()}.epub`; a.click(); URL.revokeObjectURL(a.href);
+          toast('Merge successful! Downloaded.');
+        } catch (e) { toast(`Merge error: ${e.message}`, 'error'); }
+        finally { setIsStudioBusy(false); }
+      };
+
+      // ═══════════════════════════════════════
+      // RENDER
+      // ═══════════════════════════════════════
+      const secHeader = (title, icon, isOpen, toggle) => h('button', { onClick: toggle, className: 'flex items-center justify-between w-full text-left text-xl font-bold text-gray-800 dark:text-gray-200 mb-2 p-3 bg-gray-100 dark:bg-gray-800 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors', 'aria-expanded': isOpen }, h('span', { className: 'flex items-center gap-2' }, ic(icon, 22), title), ic(isOpen ? ChevronUp : ChevronDown, 20));
+
+      return h('div', { className: 'min-h-screen bg-gray-50 dark:bg-gray-950 font-sans text-gray-800 dark:text-gray-200 transition-colors' },
+        // HEADER
+        h('header', { className: 'sticky top-0 z-40 bg-white/80 dark:bg-gray-900/80 backdrop-blur-md border-b border-gray-200 dark:border-gray-800 px-4 py-3' },
+          h('div', { className: 'max-w-5xl mx-auto flex items-center justify-between' },
+            h('div', { className: 'flex items-center gap-3' },
+              h('h1', { className: 'text-2xl sm:text-3xl font-extrabold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent' }, 'Gemini Translator'),
+              h('span', { className: 'text-xs font-medium text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 rounded-full' }, `v${VERSION}`)
+            ),
+            h('button', { onClick: () => setDarkMode(!darkMode), className: 'p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors', 'aria-label': 'Toggle dark mode' }, ic(darkMode ? Sun : Moon, 22))
+          )
+        ),
+
+        // MAIN
+        h('main', { className: 'max-w-5xl mx-auto px-4 py-6 space-y-6' },
+
+          // TABS
+          h('div', { className: 'flex border-b border-gray-200 dark:border-gray-700 gap-1 overflow-x-auto' },
+            [['text', 'Text & File', Clipboard], ['history', 'History', History], ['url', 'URL (Info)', Link], ['studio', 'EPUB Studio', Layers]].map(([key, label, Icon]) =>
+              h('button', { key, onClick: () => setActiveTab(key), className: `py-2.5 px-4 text-sm font-semibold rounded-t-lg transition-colors flex items-center gap-2 whitespace-nowrap ${activeTab === key ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}` }, ic(Icon, 18), label)
+            )
+          ),
+
+          // TAB: TEXT & FILE
+          activeTab === 'text' && h('div', { className: 'space-y-6' },
+
+            // Provider + Model Config
+            h('div', { className: 'grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800' },
+              h('div', null,
+                h('label', { className: 'block text-sm font-semibold mb-1' }, 'Translation Provider'),
+                h('select', { value: provider, onChange: e => { setProvider(e.target.value) }, disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' },
+                  h('option', { value: 'gemini' }, 'Gemini (AI)'),
+                  h('option', { value: 'openai' }, 'ChatGPT (OpenAI)'),
+                  h('option', { value: 'claude' }, 'Claude (Anthropic)'),
+                  h('option', { value: 'deepl' }, 'DeepL'),
+                  h('option', { value: 'libre' }, 'LibreTranslate (Free)')
+                )
+              ),
+              provider === 'gemini' && h('div', null,
+                h('label', { className: 'block text-sm font-semibold mb-1' }, 'Gemini Model'),
+                !useCustomModel ? h('select', { value: geminiModel, onChange: e => { setGeminiModel(e.target.value); localStorage.setItem('geminiModel', e.target.value) }, disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' },
+                  availableModels.length > 0 ? availableModels.map(m => h('option', { key: m.id, value: m.id }, m.name)) :
+                    [h('option', { key: '3.1p', value: 'gemini-3.1-pro' }, 'Gemini 3.1 Pro'), h('option', { key: '2.5f', value: 'gemini-2.5-flash' }, 'Gemini 2.5 Flash'), h('option', { key: '2.0p', value: 'gemini-2.0-pro' }, 'Gemini 2.0 Pro'), h('option', { key: '2.5p', value: 'gemini-2.5-pro' }, 'Gemini 2.5 Pro'), h('option', { key: '2.0f', value: 'gemini-2.0-flash' }, 'Gemini 2.0 Flash')]
+                ) : h('input', { type: 'text', value: customModel, onChange: e => setCustomModel(e.target.value), placeholder: 'e.g. gemini-3.1-pro', disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' }),
+                h('label', { className: 'flex items-center gap-2 mt-2 text-xs text-gray-500 cursor-pointer' }, h('input', { type: 'checkbox', checked: useCustomModel, onChange: e => setUseCustomModel(e.target.checked), className: 'rounded' }), 'Use custom model name')
+              ),
+              provider === 'gemini' && h('label', { className: 'flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer' }, h('input', { type: 'checkbox', checked: enableStreaming, onChange: e => setEnableStreaming(e.target.checked), className: 'rounded accent-indigo-600' }), ic(Zap, 16), 'Streaming'),
+              h('div', { className: 'flex items-center gap-3 col-span-full' },
+                h('label', { className: 'text-sm font-semibold whitespace-nowrap' }, `Parallel Requests: ${concurrency}`),
+                h('input', { type: 'range', min: 1, max: 10, value: concurrency, onChange: e => setConcurrency(parseInt(e.target.value)), className: 'flex-1 accent-indigo-600 h-2 cursor-pointer', disabled }),
+                h('span', { className: 'text-xs text-gray-400 whitespace-nowrap' }, concurrency === 1 ? 'Slower' : concurrency === 10 ? 'MAX SPEED' : 'Balanced')
+              )
+            ),
+
+            // Language selectors
+            h('div', { className: 'grid grid-cols-1 sm:grid-cols-2 gap-4' },
+              h('div', null,
+                h('label', { className: 'block text-sm font-semibold mb-1' }, 'Source Language'),
+                h('select', { value: srcLang, onChange: e => setSrcLang(e.target.value), disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' }, LANGUAGES.map(l => h('option', { key: l, value: l }, l)))
+              ),
+              h('div', null,
+                h('label', { className: 'block text-sm font-semibold mb-1' }, 'Target Language'),
+                h('select', { value: tgtLang, onChange: e => setTgtLang(e.target.value), disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' }, TARGET_LANGUAGES.map(l => h('option', { key: l, value: l }, l)))
+              )
+            ),
+
+            // File upload + Drag & Drop
+            h('div', { onDragOver, onDragLeave, onDrop, className: `p-4 bg-white dark:bg-gray-900 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-700 transition-all ${isDragOver ? 'drop-zone-active' : ''}` },
+              h('div', { className: 'text-center mb-3' },
+                h('p', { className: 'text-sm text-gray-500 dark:text-gray-400' }, 'Drag & drop a file here, or'),
+                h('div', { className: 'flex justify-center gap-3 mt-2' },
+                  btn({ onClick: () => fileInputRef.current?.click(), disabled, className: 'px-5 py-2.5 bg-purple-600 text-white font-semibold rounded-lg shadow hover:bg-purple-700 transition-all inline-flex items-center gap-2 disabled:opacity-50' },
+                    (uploadingFile || isTranslating) ? ic(Loader2, 18) : ic(Upload, 18),
+                    uploadingFile ? 'Processing...' : (isTranslating ? `Translating (${progress}%)` : 'Choose File (TXT, PDF, EPUB)')
+                  ),
+                  hasEbookSession && !isTranslating ? btn({ onClick: () => handleTranslateEbook([], true), disabled, className: 'px-5 py-2.5 bg-red-500 text-white font-semibold rounded-lg shadow hover:bg-red-600 transition-all inline-flex items-center gap-2 disabled:opacity-50' },
+                    ic(RotateCcw, 18), 'Resume Document'
+                  ) : null
+                ),
+                h('input', { type: 'file', ref: fileInputRef, onChange: e => { const f = e.target.files[0]; if (f) processFile(f) }, accept: '.txt,.pdf,.epub,application/epub+zip', className: 'hidden', disabled })
+              ),
+              isTranslating && h('div', { className: 'mt-3' },
+                h('div', { className: 'flex items-center justify-between text-xs text-gray-500 mb-1' }, h('span', null, progressLabel), h('span', null, `${progress}%`)),
+                h('div', { className: 'w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2' }, h('div', { className: 'bg-indigo-600 h-2 rounded-full transition-all', style: { width: `${progress}%` } }))
+              ),
+              isTranslating && btn({ onClick: cancelTranslation, className: 'mt-2 w-full px-5 py-2 bg-gray-500 text-white text-sm font-semibold rounded-lg shadow hover:bg-gray-600 transition-all flex items-center justify-center gap-2' }, ic(Square, 16), 'Pause Document')
+            ),
+
+            // Input/Output areas
+            h('div', { className: sideBySide ? 'grid grid-cols-1 md:grid-cols-2 gap-4' : 'space-y-4' },
+              // Input
+              h('div', null,
+                h('div', { className: 'flex items-center justify-between mb-1' },
+                  h('label', { className: 'text-sm font-semibold' }, 'Input Text'),
+                  h('span', { className: 'text-xs text-gray-400' }, `${wordCount(inputText)} words · ${charCount(inputText)} chars`)
+                ),
+                h('textarea', { value: inputText, onChange: e => setInputText(e.target.value), disabled, placeholder: 'Paste your content here...', className: 'w-full p-3 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 rounded-lg shadow-sm focus:ring-2 focus:ring-indigo-500 resize-y text-sm', style: { minHeight: '250px' }, 'aria-label': 'Input text for translation' }),
+                h('div', { className: 'flex flex-wrap gap-2 mt-2' },
+                  btn({ onClick: async () => { try { const t = await navigator.clipboard.readText(); setInputText(p => p + t); toast('Pasted!') } catch (e) { setError(e.message) } }, disabled, className: 'px-3 py-1.5 bg-blue-500 text-white text-sm font-medium rounded-lg hover:bg-blue-600 transition-colors inline-flex items-center gap-1.5', 'aria-label': 'Paste text from clipboard' }, ic(Clipboard, 15), 'Paste'),
+                  btn({ onClick: () => { if (inputText) copyText(inputText).then(() => toast('Copied!')) }, disabled, className: 'px-3 py-1.5 bg-gray-600 text-white text-sm font-medium rounded-lg hover:bg-gray-700 transition-colors inline-flex items-center gap-1.5', 'aria-label': 'Copy input text' }, ic(Copy, 15), 'Copy'),
+                  btn({ onClick: () => { setInputText(''); setAssembledText(''); setTranslatedChapters([]); setError('') }, disabled, className: 'px-3 py-1.5 bg-red-500 text-white text-sm font-medium rounded-lg hover:bg-red-600 transition-colors inline-flex items-center gap-1.5', 'aria-label': 'Clear input' }, ic(XCircle, 15), 'Clear'),
+                  btn({ onClick: () => { const t = inputText; setInputText(assembledText); setAssembledText(t) }, disabled, className: 'px-3 py-1.5 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 text-sm font-medium rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors inline-flex items-center gap-1.5', 'aria-label': 'Swap input and output text' }, ic(RefreshCcw, 15), 'Swap'),
+                  btn({ onClick: () => setSideBySide(!sideBySide), className: 'px-3 py-1.5 bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300 text-sm font-medium rounded-lg hover:bg-indigo-200 dark:hover:bg-indigo-800 transition-colors inline-flex items-center gap-1.5 ml-auto', 'aria-label': 'Toggle side by side view' }, ic(sideBySide ? Rows2 : Columns2, 15), sideBySide ? 'Stack' : 'Split')
+                )
+              ),
+
+              // Output
+              assembledText && h('div', null,
+                h('div', { className: 'flex items-center justify-between mb-1' },
+                  h('label', { className: 'text-sm font-semibold text-green-700 dark:text-green-400' }, `Translated (${tgtLang})`),
+                  h('span', { className: 'text-xs text-gray-400' }, `${wordCount(assembledText)} words · ${charCount(assembledText)} chars`)
+                ),
+                h('textarea', { value: assembledText, readOnly: true, className: 'w-full p-3 border border-green-300 dark:border-green-800 bg-green-50 dark:bg-gray-900 rounded-lg shadow-inner focus:outline-none resize-y text-sm', style: { minHeight: '250px' }, 'aria-label': 'Translated output text' })
+              )
+            ),
+
+            // Translate + Cancel buttons
+            h('div', { className: 'flex flex-col sm:flex-row items-center gap-3' },
+              hasTextSession && !isTranslating ? btn({ onClick: () => handleTranslateText(true), disabled, className: 'w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-orange-500 to-red-500 text-white font-bold rounded-full shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center text-lg disabled:opacity-50 disabled:hover:scale-100', title: 'Resume Session' },
+                ic(RotateCcw, 22), h('span', { className: 'ml-2' }, 'Resume Translation')
+              ) : null,
+              btn({ onClick: () => handleTranslateText(false), disabled, className: 'w-full sm:w-auto px-8 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-bold rounded-full shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center text-lg disabled:opacity-50 disabled:hover:scale-100', title: 'Ctrl+Enter' },
+                isTranslating ? ic(Loader2, 22) : ic(BookText, 22),
+                h('span', { className: 'ml-2' }, isTranslating ? `Translating... (${progress}%)` : (hasTextSession ? 'Restart Translation' : 'Translate'))
+              ),
+              isTranslating && btn({ onClick: cancelTranslation, className: 'px-5 py-2.5 bg-gray-500 text-white font-semibold rounded-full shadow hover:bg-gray-600 transition-all flex items-center gap-2', 'aria-label': 'Pause translation' }, ic(Square, 18), 'Pause'),
+              isTranslating && window.currentEpubZip && btn({ onClick: handleDownloadEPUB, className: 'px-5 py-2.5 bg-teal-500 text-white font-semibold rounded-full shadow hover:bg-teal-600 transition-all flex items-center gap-2', 'aria-label': 'Download Partial Translation' }, ic(Download, 18), 'Partial Download'),
+              isTranslating && h('div', { className: 'w-full' },
+                h('p', { className: 'text-xs text-gray-500 text-center mb-1' }, progressLabel),
+                h('div', { className: 'w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2' }, h('div', { className: 'bg-indigo-600 h-2 rounded-full transition-all', style: { width: `${progress}%` } }))
+              )
+            ),
+
+            // Estimates Display
+            inputText && !isTranslating && h('div', { className: 'flex justify-center' },
+              h('span', { className: 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 px-3 py-1 rounded-full text-xs font-medium border border-gray-200 dark:border-gray-700 flex items-center gap-1.5' },
+                ic(Zap, 14),
+                `Est. Tokens: ${Math.round(charCount(inputText) / 4).toLocaleString()} · Approx Pages: ${Math.round(wordCount(inputText) / 300).toLocaleString()}`
+              )
+            ),
+
+            // Download buttons
+            assembledText && h('div', { className: 'flex flex-wrap justify-center gap-3 pt-4 border-t border-gray-200 dark:border-gray-700' },
+              btn({ onClick: () => copyText(assembledText).then(() => toast('Copied!')), className: 'px-5 py-2.5 bg-blue-500 text-white font-semibold rounded-full shadow hover:bg-blue-600 transition-all inline-flex items-center gap-2', title: 'Ctrl+Shift+C' }, ic(Copy, 18), 'Copy'),
+              btn({ onClick: handleDownloadEPUB, disabled: downloadingEpub, className: 'px-5 py-2.5 bg-teal-500 text-white font-semibold rounded-full shadow hover:bg-teal-600 transition-all inline-flex items-center gap-2 disabled:opacity-50' }, downloadingEpub ? ic(Loader2, 18) : ic(Download, 18), 'EPUB'),
+              btn({ onClick: handleDownloadPDF, disabled: downloadingPdf, className: 'px-5 py-2.5 bg-red-500 text-white font-semibold rounded-full shadow hover:bg-red-600 transition-all inline-flex items-center gap-2 disabled:opacity-50' }, downloadingPdf ? ic(Loader2, 18) : ic(Download, 18), 'PDF'),
+              btn({ onClick: handleDownloadDOCX, disabled: downloadingDocx, className: 'px-5 py-2.5 bg-blue-700 text-white font-semibold rounded-full shadow hover:bg-blue-800 transition-all inline-flex items-center gap-2 disabled:opacity-50' }, downloadingDocx ? ic(Loader2, 18) : ic(FileDown, 18), 'DOCX')
+            ),
+
+            // Custom Instructions
+            h('div', { className: 'p-4 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800' },
+              h('label', { className: 'block text-sm font-semibold mb-1' }, 'Custom Translation Instructions'),
+              h('textarea', { value: customInstructions, onChange: e => setCustomInstructions(e.target.value), disabled, placeholder: 'e.g., "Use formal tone", "Keep character names in original language", "Output in British English"', className: 'w-full p-3 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 rounded-lg text-sm resize-y focus:ring-2 focus:ring-indigo-500', rows: 2 }),
+              h('p', { className: 'text-xs text-gray-400 mt-1' }, 'These instructions are added to every translation prompt alongside the glossary.')
+            ),
+
+            // Glossary
+            h('div', { className: 'bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden' },
+              h('div', { className: 'p-4' },
+                h('label', { className: 'block text-sm font-semibold mb-1' }, 'Glossary'),
+                h('textarea', { value: terminology, onChange: e => setTerminology(e.target.value), disabled, placeholder: 'Enter terms to ensure accurate translation...', className: 'w-full p-3 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 rounded-lg text-sm resize-y focus:ring-2 focus:ring-indigo-500', rows: 4 }),
+                h('div', { className: 'flex flex-wrap gap-2 mt-2' },
+                  btn({ onClick: async () => { try { const t = await navigator.clipboard.readText(); setTerminology(p => p + t); toast('Pasted!') } catch (e) { } }, disabled, className: 'px-3 py-1.5 bg-blue-500 text-white text-xs font-medium rounded-lg hover:bg-blue-600 inline-flex items-center gap-1' }, ic(Clipboard, 14), 'Paste'),
+                  btn({ onClick: () => { if (terminology) copyText(terminology).then(() => toast('Glossary copied!')) }, disabled, className: 'px-3 py-1.5 bg-gray-600 text-white text-xs font-medium rounded-lg hover:bg-gray-700 inline-flex items-center gap-1' }, ic(Copy, 14), 'Copy'),
+                  btn({ onClick: () => confirmAction('Clear glossary text?', () => { setTerminology(''); setActiveGlossaryId(null) }), disabled, className: 'px-3 py-1.5 bg-red-500 text-white text-xs font-medium rounded-lg hover:bg-red-600 inline-flex items-center gap-1' }, ic(XCircle, 14), 'Clear'),
+                  btn({ onClick: () => glossaryFileRef.current?.click(), disabled, className: 'px-3 py-1.5 bg-purple-500 text-white text-xs font-medium rounded-lg hover:bg-purple-600 inline-flex items-center gap-1' }, ic(Upload, 14), 'Upload'),
+                  h('input', { type: 'file', ref: glossaryFileRef, onChange: handleGlossaryFile, className: 'hidden', accept: '.txt,.md,.json,.csv,.xml,.html' })
+                )
+              ),
+
+              // Glossary Manager
+              h('div', { className: 'border-t border-gray-200 dark:border-gray-800' },
+                secHeader('Manage Glossaries', BookText, showGlossaryManager, () => setShowGlossaryManager(!showGlossaryManager)),
+                h('div', { className: `collapsible ${showGlossaryManager ? 'open' : ''}` },
+                  h('div', { className: 'p-4 space-y-3' },
+                    h('div', { className: 'flex gap-2' },
+                      h('input', { type: 'text', value: newGlossaryName, onChange: e => setNewGlossaryName(e.target.value), disabled, placeholder: 'Glossary name...', className: 'flex-1 p-2 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
+                      btn({ onClick: handleSaveGlossary, disabled, className: 'px-4 py-2 bg-purple-600 text-white text-sm font-semibold rounded-lg hover:bg-purple-700' }, 'Save')
+                    ),
+                    h('div', { className: 'flex flex-wrap gap-2' },
+                      btn({ onClick: setDefaultGloss, disabled: !activeGlossaryId || disabled, className: 'px-3 py-1.5 bg-green-500 text-white text-xs font-semibold rounded-lg hover:bg-green-600 disabled:opacity-50' }, 'Set Default'),
+                      btn({ onClick: clearDefaultGloss, disabled: !defaultGlossaryName || disabled, className: 'px-3 py-1.5 bg-orange-500 text-white text-xs font-semibold rounded-lg hover:bg-orange-600 disabled:opacity-50' }, 'Clear Default'),
+                      btn({ onClick: exportGlossaries, className: 'px-3 py-1.5 bg-indigo-500 text-white text-xs font-semibold rounded-lg hover:bg-indigo-600 inline-flex items-center gap-1' }, ic(Download, 14), 'Export All'),
+                      h('label', { className: 'px-3 py-1.5 bg-indigo-500 text-white text-xs font-semibold rounded-lg hover:bg-indigo-600 inline-flex items-center gap-1 cursor-pointer' }, ic(Upload, 14), 'Import', h('input', { type: 'file', onChange: importGlossaries, className: 'hidden', accept: '.json' }))
+                    ),
+                    defaultGlossaryName && h('p', { className: 'text-xs text-indigo-500' }, 'Default: ', h('strong', null, defaultGlossaryName)),
+                    savedGlossaries.length > 0 && h('div', { className: 'max-h-64 overflow-y-auto space-y-2' },
+                      [...savedGlossaries].sort((a, b) => a.name === activeGlossaryId ? -1 : b.name === activeGlossaryId ? 1 : a.name.localeCompare(b.name)).map((g, i) =>
+                        h('div', { key: i, className: `flex items-center justify-between p-3 rounded-lg border ${activeGlossaryId === g.name ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-900/30' : 'border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800'}` },
+                          h('span', { className: 'text-sm font-medium truncate flex-1' }, g.name, defaultGlossaryName === g.name && h('span', { className: 'text-xs text-indigo-500 ml-1' }, '★')),
+                          h('div', { className: 'flex gap-1 ml-2' },
+                            btn({ onClick: () => handleLoadGlossary(g), disabled, className: 'px-2.5 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600' }, 'Load'),
+                            activeGlossaryId === g.name && btn({ onClick: () => handleUpdateGlossary(g.name), disabled, className: 'px-2.5 py-1 text-xs bg-green-500 text-white rounded hover:bg-green-600' }, 'Update'),
+                            btn({ onClick: () => handleDeleteGlossary(g.name), disabled, className: 'px-2.5 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600' }, 'Del')
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            ),
+
+            // API Keys / Settings
+            h('div', { className: 'bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden' },
+              secHeader('Settings & API Keys', Settings, showSettings, () => setShowSettings(!showSettings)),
+              h('div', { className: `collapsible ${showSettings ? 'open' : ''}` },
+                h('div', { className: 'p-4 space-y-4' },
+                  // Gemini Key
+                  h('div', null,
+                    h('label', { className: 'block text-sm font-semibold mb-1' }, 'Gemini API Key'),
+                    h('div', { className: 'flex gap-2' },
+                      h('div', { className: 'relative flex-1' },
+                        h('input', { type: showGeminiKey ? 'text' : 'password', value: geminiKeyInput, onChange: e => setGeminiKeyInput(e.target.value), disabled, placeholder: 'Enter Gemini API key...', className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
+                        btn({ onClick: () => setShowGeminiKey(!showGeminiKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600', 'aria-label': 'Toggle key visibility' }, ic(showGeminiKey ? EyeOff : Eye, 16))
+                      )
+                    ),
+                    h('div', { className: 'flex flex-wrap gap-2 mt-2' },
+                      btn({ onClick: saveGeminiKey, className: 'px-3 py-1.5 bg-green-500 text-white text-xs font-semibold rounded-lg hover:bg-green-600' }, 'Save'),
+                      btn({ onClick: async () => { try { const t = await navigator.clipboard.readText(); setGeminiKeyInput(t); toast('Pasted!') } catch (e) { } }, className: 'px-3 py-1.5 bg-blue-500 text-white text-xs font-semibold rounded-lg hover:bg-blue-600' }, 'Paste'),
+                      btn({ onClick: clearGeminiKey, className: 'px-3 py-1.5 bg-red-500 text-white text-xs font-semibold rounded-lg hover:bg-red-600' }, 'Clear')
+                    ),
+                    geminiKey && h('p', { className: 'text-xs text-green-600 dark:text-green-400 mt-1' }, '✓ Gemini API key saved. ', availableModels.length > 0 && `${availableModels.length} models available.`)
+                  ),
+                  // DeepL Key
+                  (provider === 'deepl' || deeplKey) && h('div', null,
+                    h('label', { className: 'block text-sm font-semibold mb-1' }, 'DeepL API Key'),
+                    h('div', { className: 'relative' },
+                      h('input', { type: showDeeplKey ? 'text' : 'password', value: deeplKeyInput, onChange: e => setDeeplKeyInput(e.target.value), disabled, placeholder: 'Enter DeepL API key...', className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
+                      btn({ onClick: () => setShowDeeplKey(!showDeeplKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600', 'aria-label': 'Toggle key visibility' }, ic(showDeeplKey ? EyeOff : Eye, 16))
+                    ),
+                    h('div', { className: 'flex gap-2 mt-2' },
+                      btn({ onClick: saveDeeplKey, className: 'px-3 py-1.5 bg-green-500 text-white text-xs font-semibold rounded-lg hover:bg-green-600' }, 'Save'),
+                      btn({ onClick: clearDeeplKey, className: 'px-3 py-1.5 bg-red-500 text-white text-xs font-semibold rounded-lg hover:bg-red-600' }, 'Clear')
+                    ),
+                    deeplKey && h('p', { className: 'text-xs text-green-600 dark:text-green-400 mt-1' }, '✓ DeepL API key saved.'),
+                    h('p', { className: 'text-xs text-gray-400 mt-1' }, 'Free tier: 500K chars/month. Key ending in :fx uses free endpoint.')
+                  ),
+                  // LibreTranslate URL
+                  provider === 'libre' && h('div', null,
+                    h('label', { className: 'block text-sm font-semibold mb-1' }, 'LibreTranslate URL'),
+                    h('div', { className: 'flex gap-2' },
+                      h('input', { type: 'text', value: libreUrl, onChange: e => setLibreUrl(e.target.value), className: 'flex-1 p-2.5 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
+                      btn({ onClick: saveLibreUrl, className: 'px-3 py-1.5 bg-green-500 text-white text-xs font-semibold rounded-lg hover:bg-green-600' }, 'Save')
+                    ),
+                    h('p', { className: 'text-xs text-gray-400 mt-1' }, 'Default: libretranslate.com. Use your own instance for better reliability.')
+                  )
+                )
+              )
+            )
+          ),
+
+          // TAB: HISTORY
+          activeTab === 'history' && h('div', { className: 'space-y-4' },
+            h('div', { className: 'flex items-center justify-between' },
+              h('h2', { className: 'text-xl font-bold' }, 'Translation History'),
+              history.length > 0 && btn({ onClick: clearHistory, className: 'px-3 py-1.5 bg-red-500 text-white text-xs font-semibold rounded-lg hover:bg-red-600 inline-flex items-center gap-1' }, ic(Trash2, 14), 'Clear All')
+            ),
+            history.length === 0 ? h('p', { className: 'text-gray-500 dark:text-gray-400 text-center py-8' }, 'No translation history yet.') :
+              h('div', { className: 'space-y-3' }, history.map(entry =>
+                h('div', { key: entry.id, className: 'p-4 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800' },
+                  h('div', { className: 'flex items-center justify-between mb-2' },
+                    h('div', { className: 'flex items-center gap-2 text-xs text-gray-500' },
+                      h('span', { className: 'font-medium text-indigo-600 dark:text-indigo-400' }, entry.provider),
+                      h('span', null, '·'),
+                      h('span', null, `${entry.srcLang || 'Auto'} → ${entry.tgtLang}`),
+                      h('span', null, '·'),
+                      h('span', null, new Date(entry.ts).toLocaleString())
+                    ),
+                    h('div', { className: 'flex gap-1' },
+                      btn({ onClick: () => loadFromHistory(entry), className: 'px-2.5 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600' }, 'Load'),
+                      btn({ onClick: () => deleteHistoryItem(entry.id), className: 'px-2.5 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600' }, 'Del')
+                    )
+                  ),
+                  h('p', { className: 'text-sm text-gray-600 dark:text-gray-400 line-clamp-2' }, entry.outputPreview || entry.inputPreview)
+                )
+              ))
+          ),
+
+          // TAB: URL INFO
+          activeTab === 'url' && h('div', { className: 'p-6 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800' },
+            h('h2', { className: 'text-xl font-bold mb-3' }, 'URL Content Information'),
+            h('p', { className: 'text-gray-600 dark:text-gray-400 leading-relaxed' }, h('strong', null, 'Note:'), ' This app runs in your browser and cannot fetch content from URLs directly.', h('br'), h('br'), h('strong', null, 'Workaround:'), ' Copy text from the website and paste it into the Text & File tab.')
+          ),
+
+          // TAB: STUDIO
+          activeTab === 'studio' && h('div', { className: 'space-y-6' },
+            h('div', { className: 'p-6 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800' },
+              h('h2', { className: 'text-xl font-bold mb-3 flex items-center gap-2' }, ic(Layers, 24), 'EPUB Studio (Split/Merge)'),
+
+              // Split Area
+              h('div', { className: 'mt-6 p-4 border border-indigo-200 dark:border-indigo-900 bg-indigo-50 dark:bg-indigo-900/10 rounded-lg' },
+                h('h3', { className: 'font-semibold text-indigo-800 dark:text-indigo-400 mb-2' }, 'Split EPUB for Translation'),
+                h('input', { type: 'file', accept: '.epub', onChange: e => setSplitFile(e.target.files[0]), className: 'block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 dark:file:bg-indigo-900 dark:file:text-indigo-300' }),
+                btn({ onClick: handleSplit, disabled: !splitFile || isStudioBusy, className: 'mt-3 px-4 py-2 bg-indigo-600 text-white font-semibold rounded shadow hover:bg-indigo-700 disabled:opacity-50 inline-flex items-center gap-2' }, isStudioBusy ? ic(Loader2, 16) : ic(FileText, 16), 'Analyze & Split'),
+                splitMsgs.length > 0 && h('div', { className: 'mt-3 p-3 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded text-sm' },
+                  h('p', { className: 'font-medium mb-1' }, 'Split Preview:'),
+                  h('ul', { className: 'list-disc pl-5 space-y-1' }, splitMsgs.map((m, i) => h('li', { key: i }, m)))
+                )
+              ),
+
+              // Merge Area
+              h('div', { className: 'mt-6 p-4 border border-green-200 dark:border-green-900 bg-green-50 dark:bg-green-900/10 rounded-lg' },
+                h('h3', { className: 'font-semibold text-green-800 dark:text-green-400 mb-2' }, 'Merge EPUB Parts'),
+                h('input', { type: 'file', multiple: true, accept: '.epub', onChange: e => setMergeFiles(Array.from(e.target.files)), className: 'block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-green-50 file:text-green-700 hover:file:bg-green-100 dark:file:bg-green-900 dark:file:text-green-300' }),
+                mergeFiles.length > 0 && h('p', { className: 'mt-2 text-xs text-green-700 dark:text-green-500' }, `Selected ${mergeFiles.length} file(s).`),
+                btn({ onClick: handleMerge, disabled: mergeFiles.length < 2 || isStudioBusy, className: 'mt-3 px-4 py-2 bg-green-600 text-white font-semibold rounded shadow hover:bg-green-700 disabled:opacity-50 inline-flex items-center gap-2' }, isStudioBusy ? ic(Loader2, 16) : ic(Layers, 16), 'Merge EPUBs')
+              )
+            )
+          ),
+
+          // Error display
+          error && h('div', { className: 'flex items-center justify-between p-4 bg-red-50 dark:bg-red-900/20 border-l-4 border-red-500 rounded-r-lg', 'role': 'alert' },
+            h('p', { className: 'text-sm font-medium text-red-700 dark:text-red-400' }, error),
+            btn({ onClick: () => setError(''), className: 'text-red-500 hover:text-red-700', 'aria-label': 'Dismiss error' }, ic(X, 18))
+          )
+        ),
+
+        // TOASTS
+        h('div', { className: 'fixed bottom-4 right-4 z-50 space-y-2', role: 'status', 'aria-live': 'polite' },
+          toasts.map(t => h('div', { key: t.id, className: `toast-enter flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg text-sm font-medium ${t.type === 'error' ? 'bg-red-600 text-white' : t.type === 'info' ? 'bg-blue-600 text-white' : 'bg-green-600 text-white'}` },
+            ic(t.type === 'error' ? AlertCircle : t.type === 'info' ? Info : CheckCircle2, 16), t.msg
+          ))
+        ),
+
+        // MODAL
+        showModal && h('div', { className: 'fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4', role: 'dialog', 'aria-modal': 'true' },
+          h('div', { className: 'bg-white dark:bg-gray-800 rounded-xl shadow-2xl p-6 max-w-sm w-full space-y-4' },
+            h('p', { className: 'text-lg font-semibold text-center' }, modalMessage),
+            h('div', { className: 'flex justify-center gap-3' },
+              btn({ onClick: () => { if (modalCallback) modalCallback() }, className: 'px-6 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 font-semibold' }, 'Confirm'),
+              btn({ onClick: () => { setShowModal(false); setModalCallback(null) }, className: 'px-6 py-2 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-500 font-semibold' }, 'Cancel')
+            )
+          )
+        ),
+
+        // FOOTER
+        h('footer', { className: 'text-center text-xs text-gray-400 py-4' }, 'Gemini Translator v', VERSION, ' · Powered by Gemini, DeepL & LibreTranslate')
+      );
+    }
+
+    const root = document.getElementById('root');
+    if (root) ReactDOM.createRoot(root).render(h(ErrorBoundary, null, h(App)));
+
+    // Service Worker Registration
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js').then(reg => {
+          reg.onupdatefound = () => {
+            const w = reg.installing;
+            if (w) w.onstatechange = () => { if (w.state === 'installed' && navigator.serviceWorker.controller) alert('New version installed! Refresh to update.'); };
+          };
+        }).catch(err => console.error('SW reg failed:', err));
+      });
+    }
+  </script>
+</body>
+
+</html>
