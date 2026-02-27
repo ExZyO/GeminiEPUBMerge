@@ -1,0 +1,620 @@
+<!DOCTYPE html>
+<html lang="en" class="light">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPUB Studio v4 - Split & Merge</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#4f46e5">
+
+    <script src="vendor/jszip.min.js"></script>
+    <link rel="stylesheet" href="tailwind-output.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+
+<body
+    class="bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-sans min-h-screen p-4 sm:p-8 transition-colors duration-300">
+
+    <div class="max-w-6xl mx-auto space-y-6 relative">
+
+        <button id="theme-toggle"
+            class="absolute top-0 right-0 p-3 rounded-full bg-white dark:bg-slate-800 shadow-sm border border-slate-200 dark:border-slate-700 hover:scale-105 transition-transform text-slate-500 dark:text-slate-400 z-10">
+            <svg id="icon-sun" class="hidden w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="5" />
+                <line x1="12" y1="1" x2="12" y2="3" />
+                <line x1="12" y1="21" x2="12" y2="23" />
+                <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+                <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+                <line x1="1" y1="12" x2="3" y2="12" />
+                <line x1="21" y1="12" x2="23" y2="12" />
+                <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+                <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+            </svg>
+            <svg id="icon-moon" class="w-5 h-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+            </svg>
+        </button>
+
+        <header class="text-center space-y-3 pt-4">
+            <h1 class="text-3xl sm:text-4xl font-extrabold text-slate-900 dark:text-white tracking-tight">EPUB Studio
+                <span class="text-indigo-600 dark:text-indigo-400">v4</span>
+            </h1>
+            <p class="text-slate-500 dark:text-slate-400 text-lg">Split large ebooks or seamlessly merge multiple parts.
+            </p>
+        </header>
+
+        <div class="flex justify-center mb-6">
+            <div
+                class="bg-white dark:bg-slate-800 p-1 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 inline-flex">
+                <button id="tab-split"
+                    class="flex items-center space-x-2 px-8 py-2.5 rounded-lg font-bold transition-colors bg-indigo-50 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-400">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="6" cy="6" r="3" />
+                        <circle cx="6" cy="18" r="3" />
+                        <line x1="20" y1="4" x2="8.12" y2="15.88" />
+                        <line x1="14.47" y1="14.48" x2="20" y2="20" />
+                        <line x1="8.12" y1="8.12" x2="12" y2="12" />
+                    </svg>
+                    <span>Split EPUB</span>
+                </button>
+                <button id="tab-merge"
+                    class="flex items-center space-x-2 px-8 py-2.5 rounded-lg font-bold transition-colors text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="m8 6 4-4 4 4" />
+                        <path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22" />
+                        <path d="m20 22-5-5" />
+                    </svg>
+                    <span>Merge EPUBs</span>
+                </button>
+            </div>
+        </div>
+
+        <div id="view-split"
+            class="bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors duration-300">
+
+            <input type="file" id="epub-input" accept=".epub" class="hidden" />
+            <div id="upload-section"
+                class="p-12 sm:p-20 text-center hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors cursor-pointer group border-b-4 border-indigo-500"
+                ondragover="event.preventDefault(); this.classList.add('ring-4','ring-indigo-400');"
+                ondragleave="this.classList.remove('ring-4','ring-indigo-400');"
+                ondrop="event.preventDefault(); this.classList.remove('ring-4','ring-indigo-400'); if(event.dataTransfer.files.length>0 && event.dataTransfer.files[0].name.endsWith('.epub')) processSplitFile(event.dataTransfer.files[0]);">
+                <div
+                    class="mx-auto w-20 h-20 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform shadow-sm">
+                    <svg id="upload-icon" xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24"
+                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                        <polyline points="17 8 12 3 7 8" />
+                        <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    <div id="loading-spinner"
+                        class="hidden w-10 h-10 border-4 border-indigo-600 dark:border-indigo-400 border-t-transparent rounded-full animate-spin">
+                    </div>
+                </div>
+                <h3 id="upload-title" class="text-2xl font-bold text-slate-800 dark:text-white mb-2">Select your .epub
+                    file to Split</h3>
+                <p id="upload-desc" class="text-slate-500 dark:text-slate-400 font-medium">Click here or drag and drop
+                </p>
+                <div id="loading-progress-wrapper" class="hidden w-full max-w-xs mx-auto mt-4">
+                    <div class="flex justify-between text-xs mb-1 text-slate-400">
+                        <span id="loading-progress-status">Loading EPUB...</span>
+                        <span id="loading-progress-percent">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-1.5 overflow-hidden">
+                        <div id="loading-progress-bar" class="bg-indigo-500 h-1.5 transition-all duration-200 ease-out"
+                            style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="editor-section" class="hidden">
+                <div
+                    class="bg-slate-900 dark:bg-black text-white p-6 sm:px-10 flex flex-col items-center gap-4 text-center">
+                    <div id="split-cover-preview"
+                        class="w-24 h-32 bg-slate-800 rounded-lg border border-slate-700 flex items-center justify-center overflow-hidden shrink-0 cursor-pointer object-cover shadow-md hover:border-indigo-500 transition-colors"
+                        title="Click to upload custom cover">
+                        <span class="text-xs text-slate-400 text-center px-2">Current<br>Cover</span>
+                    </div>
+
+                    <div class="w-full max-w-lg">
+                        <input type="text" id="split-title-input"
+                            class="text-2xl font-bold bg-transparent border-b border-slate-700 hover:border-slate-500 focus:border-indigo-500 focus:outline-none w-full pb-1 text-white text-center placeholder-slate-500 transition-colors mb-2"
+                            placeholder="Book Title">
+                        <p id="chapter-count" class="text-indigo-300 font-medium mb-4">0 story chapters detected</p>
+
+                        <input type="file" id="split-cover-input" accept="image/jpeg, image/png, image/webp"
+                            class="hidden">
+                        <div class="flex flex-wrap justify-center gap-3">
+                            <button type="button" id="btn-split-cover"
+                                class="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 rounded-lg text-sm font-medium transition-colors">
+                                Change Cover
+                            </button>
+                            <button id="btn-reset"
+                                class="px-4 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-200 rounded-lg text-sm font-medium transition-colors">
+                                Load Different Book
+                            </button>
+                            <button type="button" id="btn-remove-split-cover"
+                                class="hidden px-4 py-2 bg-red-900/40 hover:bg-red-900/70 border border-red-800/50 text-red-400 rounded-lg text-sm font-medium transition-colors">
+                                Remove Cover
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Metadata Viewer -->
+                <div id="metadata-viewer"
+                    class="hidden bg-slate-800/80 dark:bg-black/80 backdrop-blur text-white px-6 py-4 sm:px-10">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">📊 Book Metadata</span>
+                        <button id="btn-toggle-metadata" class="text-xs text-indigo-400 hover:underline">Hide</button>
+                    </div>
+                    <div id="metadata-content" class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+                    </div>
+                </div>
+
+                <div class="p-6 sm:p-10 bg-slate-50 dark:bg-slate-800/50">
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+                        <div class="space-y-6">
+                            <div
+                                class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-2xl shadow-sm">
+                                <h3 class="text-lg font-bold text-slate-800 dark:text-white mb-4">1. Extract Range</h3>
+                                <div class="flex flex-col sm:flex-row items-center gap-3 mb-4">
+                                    <div class="w-full">
+                                        <label
+                                            class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Start</label>
+                                        <input type="number" id="range-start" min="1"
+                                            class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-lg font-bold text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    </div>
+                                    <div class="text-slate-400 font-bold sm:mt-6">TO</div>
+                                    <div class="w-full">
+                                        <label
+                                            class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">End</label>
+                                        <input type="number" id="range-end" min="1"
+                                            class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-lg font-bold text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                    </div>
+                                </div>
+                                <button id="btn-export-range"
+                                    class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50">Download
+                                    Range</button>
+                            </div>
+
+                            <div
+                                class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-2xl shadow-sm">
+                                <h3 class="text-lg font-bold text-slate-800 dark:text-white mb-4">2. Split into Parts
+                                </h3>
+
+                                <div class="flex gap-4 mb-4">
+                                    <label
+                                        class="flex items-center gap-2 cursor-pointer text-sm font-bold text-slate-700 dark:text-slate-300">
+                                        <input type="radio" name="split-mode" value="chapters"
+                                            class="w-4 h-4 text-indigo-600 focus:ring-indigo-500 border-slate-300"
+                                            checked>
+                                        By Chapters
+                                    </label>
+                                    <label
+                                        class="flex items-center gap-2 cursor-pointer text-sm font-bold text-slate-700 dark:text-slate-300">
+                                        <input type="radio" name="split-mode" value="size"
+                                            class="w-4 h-4 text-indigo-600 focus:ring-indigo-500 border-slate-300">
+                                        By Size
+                                    </label>
+                                </div>
+
+                                <div id="split-mode-chapters-wrapper" class="mb-4">
+                                    <label
+                                        class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Chapters
+                                        per book</label>
+                                    <input type="number" id="chunk-size" value="100" min="1"
+                                        class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-lg font-bold text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                                </div>
+
+                                <div id="split-mode-size-wrapper" class="hidden mb-4">
+                                    <label
+                                        class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Target
+                                        Size per book (MB)</label>
+                                    <input type="number" id="chunk-size-mb" value="20" min="1"
+                                        class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-lg font-bold text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                                </div>
+
+                                <!-- Keep Only Text Toggle -->
+                                <label class="flex items-center gap-2 cursor-pointer mb-4">
+                                    <input type="checkbox" id="keep-only-text"
+                                        class="w-4 h-4 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500">
+                                    <span class="text-xs font-bold text-slate-500 dark:text-slate-400">Keep Only Text
+                                        (strip images, fonts, CSS)</span>
+                                </label>
+
+                                <!-- CSS Theme Injection -->
+                                <div class="mb-4">
+                                    <label
+                                        class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Reading
+                                        Theme</label>
+                                    <select id="css-theme-inject"
+                                        class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                        <option value="none">None (keep original)</option>
+                                        <option value="dark">Dark Mode Reading</option>
+                                        <option value="sepia">Sepia / Warm</option>
+                                        <option value="large">Large Text</option>
+                                    </select>
+                                </div>
+
+                                <!-- Export Presets -->
+                                <div class="flex gap-2 mb-4">
+                                    <select id="export-presets"
+                                        class="flex-1 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-700 dark:text-slate-300 focus:outline-none">
+                                        <option value="">Load Preset...</option>
+                                    </select>
+                                    <button id="btn-save-preset"
+                                        class="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold rounded-lg">Save</button>
+                                </div>
+
+                                <button id="btn-export-chunks"
+                                    class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50">Download
+                                    All Parts</button>
+
+                                <!-- Export as ZIP -->
+                                <button id="btn-export-zip"
+                                    class="mt-2 w-full bg-slate-600 hover:bg-slate-700 text-white font-bold py-2.5 rounded-xl transition-colors shadow-sm text-sm disabled:opacity-50">📦
+                                    Export as Plain ZIP</button>
+                            </div>
+                        </div>
+
+                        <div class="flex flex-col h-full space-y-6">
+
+                            <div
+                                class="bg-slate-900 dark:bg-black rounded-2xl p-5 border border-slate-800 font-mono text-sm overflow-hidden flex flex-col h-48 shrink-0 shadow-sm">
+                                <div class="flex items-center justify-between mb-3 border-b border-slate-700 pb-2">
+                                    <span class="text-slate-400 font-bold uppercase tracking-wider text-xs">Activity
+                                        Console</span>
+                                </div>
+                                <div id="status-log"
+                                    class="flex-1 overflow-y-auto custom-scrollbar space-y-1 text-slate-300 pr-2 pb-2">
+                                    <div class="text-indigo-400">> System ready.</div>
+                                </div>
+
+                                <div id="split-progress-wrapper" class="hidden mt-3 pt-3 border-t border-slate-700">
+                                    <div class="flex justify-between text-xs mb-1 text-slate-400">
+                                        <span id="split-progress-status">Compressing...</span>
+                                        <span id="split-progress-percent">0%</span>
+                                    </div>
+                                    <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                                        <div id="split-progress-bar"
+                                            class="bg-indigo-500 h-1.5 transition-all duration-100 ease-out"
+                                            style="width: 0%"></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div
+                                class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-2xl shadow-sm flex-1 flex flex-col min-h-[400px]">
+                                <div class="flex items-center justify-between mb-4">
+                                    <div>
+                                        <h3 class="text-lg font-bold text-slate-800 dark:text-white">📋 Chapter
+                                            Selection</h3>
+                                    </div>
+                                    <span id="preview-count"
+                                        class="text-xs font-mono bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 px-3 py-1 rounded-full whitespace-nowrap">0
+                                        selected</span>
+                                </div>
+
+                                <div class="flex gap-2 mb-4">
+                                    <button id="btn-export-custom"
+                                        class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50">
+                                        Download Checked
+                                    </button>
+                                    <button id="btn-share-export"
+                                        class="px-4 bg-slate-600 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50"
+                                        title="Share via Web Share API">
+                                        📤
+                                    </button>
+                                </div>
+
+                                <!-- Estimated output size -->
+                                <div id="estimated-size"
+                                    class="hidden mb-3 text-xs font-bold text-slate-400 dark:text-slate-500 text-center">
+                                    Estimated output: <span id="estimated-size-value">0</span> MB
+                                </div>
+
+                                <div class="flex items-center gap-2 mb-3 flex-wrap">
+                                    <button id="btn-select-all"
+                                        class="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline">Select
+                                        All</button>
+                                    <span class="text-slate-300 dark:text-slate-600">|</span>
+                                    <button id="btn-deselect-all"
+                                        class="text-xs font-bold text-slate-500 hover:underline">Deselect All</button>
+                                    <span class="text-slate-300 dark:text-slate-600">|</span>
+                                    <button id="btn-batch-rename"
+                                        class="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline">Batch
+                                        Rename</button>
+                                </div>
+
+                                <!-- Chapter Search -->
+                                <input type="text" id="chapter-search" placeholder="🔍 Search chapters..."
+                                    class="w-full mb-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-400">
+
+                                <div id="chapter-list"
+                                    class="flex-1 overflow-y-auto custom-scrollbar text-sm bg-slate-50 dark:bg-slate-900/50 rounded-xl p-2 border border-slate-200 dark:border-slate-700 divide-y divide-slate-200 dark:divide-slate-700/50 font-mono">
+                                </div>
+                            </div>
+
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="view-merge"
+            class="hidden bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors duration-300">
+            <div class="p-8 sm:p-12">
+                <div class="max-w-3xl mx-auto">
+                    <div class="text-center mb-8">
+                        <div
+                            class="w-16 h-16 bg-fuchsia-100 dark:bg-fuchsia-900/40 text-fuchsia-600 dark:text-fuchsia-400 rounded-full flex items-center justify-center mx-auto mb-4">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"
+                                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round">
+                                <path d="m8 6 4-4 4 4" />
+                                <path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22" />
+                                <path d="m20 22-5-5" />
+                            </svg>
+                        </div>
+                        <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Smart Novel Merger</h2>
+                        <p class="text-slate-500 dark:text-slate-400 mt-2">Combine parts together. This tool now maps
+                            and combines Tables of Contents correctly.</p>
+                        <div id="memory-warning"
+                            class="hidden mt-4 inline-block bg-amber-100 text-amber-800 px-4 py-2 rounded-lg text-sm font-medium border border-amber-200">
+                            ⚠️ Total size exceeds 300MB. The browser tab may crash if your device runs out of RAM.
+                        </div>
+                    </div>
+
+                    <input type="file" id="merge-input" accept=".epub" multiple class="hidden" />
+                    <div id="merge-upload-box"
+                        class="border-2 border-dashed border-slate-300 dark:border-slate-600 rounded-2xl p-10 text-center hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors cursor-pointer mb-6">
+                        <span class="text-lg font-bold text-indigo-600 dark:text-indigo-400">Click to Select Multiple
+                            EPUBs</span>
+                        <span class="block text-slate-400 text-sm mt-1">or drag and drop them here</span>
+                    </div>
+
+                    <div id="merge-list-container" class="hidden space-y-4">
+                        <div class="flex items-center justify-between">
+                            <h3 class="font-bold text-slate-700 dark:text-slate-300">Files to Merge:</h3>
+                            <div class="flex items-center gap-4">
+                                <button id="btn-clear-all-merge"
+                                    class="hidden text-xs font-bold text-red-500 hover:text-red-700 dark:hover:text-red-400 hover:underline flex items-center gap-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round">
+                                        <polyline points="3 6 5 6 21 6" />
+                                        <path
+                                            d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                        <line x1="10" y1="11" x2="10" y2="17" />
+                                        <line x1="14" y1="11" x2="14" y2="17" />
+                                    </svg>
+                                    Clear All
+                                </button>
+                                <button id="btn-add-more-merge"
+                                    class="text-xs font-bold text-fuchsia-600 dark:text-fuchsia-400 hover:underline flex items-center gap-1">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"
+                                        fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                        stroke-linejoin="round">
+                                        <line x1="12" y1="5" x2="12" y2="19" />
+                                        <line x1="5" y1="12" x2="19" y2="12" />
+                                    </svg>
+                                    Add More Files
+                                </button>
+                            </div>
+                        </div>
+
+                        <div id="merge-file-list" class="space-y-2 max-h-96 overflow-y-auto custom-scrollbar pr-2 pb-2">
+                        </div>
+
+                        <div class="pt-6 border-t border-slate-200 dark:border-slate-700 mt-4">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                                <div>
+                                    <label
+                                        class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">New
+                                        Book Title</label>
+                                    <input type="text" id="merge-title" placeholder="e.g. Reverend Insanity (Complete)"
+                                        class="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 font-bold text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-fuchsia-500">
+                                </div>
+
+                                <div>
+                                    <label
+                                        class="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Custom
+                                        Cover (Optional)</label>
+                                    <div class="flex items-center gap-4">
+                                        <div id="cover-preview"
+                                            class="w-12 h-16 bg-slate-200 dark:bg-slate-700 rounded border border-slate-300 dark:border-slate-600 flex items-center justify-center overflow-hidden shrink-0 cursor-pointer object-cover"
+                                            title="Click to upload custom cover">
+                                            <span class="text-[10px] leading-tight text-slate-400 text-center px-1">Book
+                                                1<br>Cover</span>
+                                        </div>
+                                        <div class="flex-1">
+                                            <input type="file" id="cover-input"
+                                                accept="image/jpeg, image/png, image/webp" class="hidden">
+                                            <button type="button" id="btn-select-cover"
+                                                class="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-white rounded-lg text-sm font-medium transition-colors">
+                                                Upload Image
+                                            </button>
+                                            <button type="button" id="btn-remove-cover"
+                                                class="hidden ml-2 px-3 py-1.5 bg-red-100 hover:bg-red-200 text-red-600 dark:bg-red-900/30 dark:hover:bg-red-900/50 dark:text-red-400 rounded-lg text-sm font-medium transition-colors">
+                                                Remove
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <details
+                                class="mb-6 group bg-slate-50 dark:bg-slate-900/50 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
+                                <summary
+                                    class="cursor-pointer p-4 font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between select-none">
+                                    <span>Advanced Settings</span>
+                                    <svg class="w-5 h-5 transition-transform group-open:rotate-180"
+                                        xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fill-rule="evenodd"
+                                            d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                                            clip-rule="evenodd" />
+                                    </svg>
+                                </summary>
+                                <div
+                                    class="p-4 pt-0 grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-slate-200 dark:border-slate-700">
+                                    <div>
+                                        <label
+                                            class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Author
+                                            / Creator</label>
+                                        <input type="text" id="merge-author"
+                                            class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-medium text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-fuchsia-500">
+                                    </div>
+                                    <div>
+                                        <label
+                                            class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Publisher</label>
+                                        <input type="text" id="merge-publisher"
+                                            class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-medium text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-fuchsia-500">
+                                    </div>
+                                    <div>
+                                        <label
+                                            class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Language</label>
+                                        <input type="text" id="merge-language" value="en"
+                                            class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-medium text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-fuchsia-500">
+                                    </div>
+                                    <div>
+                                        <label
+                                            class="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">Compression</label>
+                                        <select id="merge-compression"
+                                            class="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm font-medium text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-fuchsia-500 h-[38px]">
+                                            <option value="DEFLATE">Small File (DEFLATE max)</option>
+                                            <option value="STORE" selected>Fast Speed (STORE uncompressed)</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </details>
+
+                            <button id="btn-execute-merge"
+                                class="w-full bg-fuchsia-600 hover:bg-fuchsia-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50 flex items-center justify-center gap-2">
+                                <span id="merge-btn-text">Merge & Download</span>
+                                <div id="merge-spinner"
+                                    class="hidden w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin">
+                                </div>
+                            </button>
+
+                            <div id="merge-progress-wrapper" class="hidden mt-4">
+                                <div
+                                    class="flex justify-between text-xs mb-1 font-bold text-slate-500 dark:text-slate-400">
+                                    <span id="merge-progress-status">Compressing Final File...</span>
+                                    <span id="merge-progress-percent">0%</span>
+                                </div>
+                                <div class="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2 overflow-hidden">
+                                    <div id="merge-progress-bar"
+                                        class="bg-fuchsia-500 h-2 transition-all duration-100 ease-out"
+                                        style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Chapter Preview Modal -->
+    <div id="chapter-preview-modal"
+        class="hidden fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+        onclick="if(event.target===this)this.classList.add('hidden')">
+        <div
+            class="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden">
+            <div class="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-700">
+                <h3 id="preview-modal-title" class="font-bold text-slate-800 dark:text-white truncate">Chapter Preview
+                </h3>
+                <button onclick="document.getElementById('chapter-preview-modal').classList.add('hidden')"
+                    class="w-8 h-8 flex items-center justify-center text-slate-500 hover:text-red-500 text-lg font-bold">✕</button>
+            </div>
+            <div id="preview-modal-body"
+                class="p-6 overflow-y-auto custom-scrollbar text-sm text-slate-700 dark:text-slate-300 leading-relaxed font-serif">
+            </div>
+        </div>
+    </div>
+
+    <!-- Export History Panel -->
+    <div class="max-w-6xl mx-auto mt-6">
+        <details id="export-history-panel"
+            class="group bg-white dark:bg-slate-800 rounded-2xl shadow-md border border-slate-200 dark:border-slate-700 overflow-hidden">
+            <summary
+                class="cursor-pointer p-4 font-bold text-slate-700 dark:text-slate-300 flex items-center justify-between select-none">
+                <span>📦 Export History</span>
+                <svg class="w-5 h-5 transition-transform group-open:rotate-180" xmlns="http://www.w3.org/2000/svg"
+                    viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd"
+                        d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"
+                        clip-rule="evenodd" />
+                </svg>
+            </summary>
+            <div class="p-4 pt-0 border-t border-slate-200 dark:border-slate-700">
+                <div id="export-history-list"
+                    class="divide-y divide-slate-100 dark:divide-slate-700/50 text-sm max-h-60 overflow-y-auto custom-scrollbar">
+                    <p class="text-slate-400 py-2">No exports yet.</p>
+                </div>
+                <button id="btn-clear-history" class="mt-3 text-xs font-bold text-red-500 hover:underline">Clear
+                    History</button>
+            </div>
+        </details>
+    </div>
+
+    <!-- Keyboard Shortcuts Tooltip -->
+    <div id="kbd-tooltip"
+        class="hidden fixed bottom-20 left-4 bg-slate-900 text-white text-xs rounded-xl p-4 shadow-xl border border-slate-700 z-50 space-y-1 max-w-xs">
+        <div class="font-bold text-indigo-400 mb-2">⌨ Keyboard Shortcuts</div>
+        <div><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-[10px]">Ctrl+1</kbd> Split Tab</div>
+        <div><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-[10px]">Ctrl+2</kbd> Merge Tab</div>
+        <div><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-[10px]">Ctrl+A</kbd> Select All Chapters</div>
+        <div><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-[10px]">Ctrl+D</kbd> Deselect All Chapters</div>
+        <div><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-[10px]">Ctrl+S</kbd> Trigger Active Export</div>
+        <div><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-[10px]">Ctrl+Z</kbd> Undo Selection</div>
+        <div><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-[10px]">Ctrl+Y</kbd> Redo Selection</div>
+        <div><kbd class="px-1.5 py-0.5 bg-slate-700 rounded text-[10px]">?</kbd> Toggle This Help</div>
+    </div>
+
+    <div id="toast-container" class="fixed bottom-4 right-4 z-50 flex flex-col-reverse gap-2 pointer-events-none"></div>
+
+    <script src="app.js"></script>
+    <script src="splitter.js"></script>
+    <script src="merger.js"></script>
+    <script>
+        // SMART PWA SERVICE WORKER REGISTRATION (UPDATE AWARE)
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('sw.js')
+                    .then(reg => {
+                        console.log('App ready for offline use.');
+
+                        // Detect if a new version of sw.js was downloaded
+                        reg.addEventListener('updatefound', () => {
+                            const newWorker = reg.installing;
+                            newWorker.addEventListener('statechange', () => {
+                                // If the new worker is ready, and we already have an old one controlling the page
+                                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                    // Make sure showToast is globally available or imported
+                                    if (window.showToast) {
+                                        window.showToast("A new version is available! <button onclick='window.location.reload()' style='margin-left:8px; padding: 2px 8px; background: white; color: black; border-radius: 4px; font-weight: bold;'>Reload</button>", "info");
+                                    } else {
+                                        if (confirm("A new version of EPUB Studio is available! Reload to update?")) {
+                                            window.location.reload();
+                                        }
+                                    }
+                                }
+                            });
+                        });
+                    })
+                    .catch(err => console.error('Service Worker failed:', err));
+            });
+        }
+    </script>
+</body>
+
+</html>

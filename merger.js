@@ -1,4 +1,7 @@
 window.initMergerJs = function () {
+    const container = document.getElementById('view-merge');
+    if (!container || container.dataset.init === 'true') return;
+    container.dataset.init = 'true';
     let mergeFiles = [];
     let customCoverFile = null;
 
@@ -40,9 +43,7 @@ window.initMergerJs = function () {
     });
 
     // Upload Handlers
-    mergeUploadBox?.addEventListener('click', (e) => {
-        if (e.target !== mergeInput) mergeInput?.click();
-    });
+
     document.getElementById('btn-add-more-merge')?.addEventListener('click', () => mergeInput?.click());
 
     // NEW: Clear All Logic
@@ -54,32 +55,96 @@ window.initMergerJs = function () {
         }
     });
 
-    mergeInput?.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) {
-            handleMergeFiles(Array.from(e.target.files));
-        }
-        e.target.value = '';
-    });
 
-    function handleMergeFiles(files) {
+
+    window.handleMergeFiles = async function handleMergeFiles(files) {
         const validFiles = files.filter(f => f.name.endsWith('.epub'));
         if (validFiles.length === 0) return;
 
-        // Duplicate detection
+        // Duplicate detection & Filtering
         const existingNames = new Set(mergeFiles.map(f => f.name));
-        const dupes = validFiles.filter(f => existingNames.has(f.name));
-        if (dupes.length > 0) {
-            showToast(`⚠️ Duplicate${dupes.length > 1 ? 's' : ''} detected: ${dupes.map(f => f.name).join(', ')}`, 'warn');
+        const uniqueFiles = validFiles.filter(f => !existingNames.has(f.name));
+
+        if (validFiles.length > uniqueFiles.length) {
+            showToast(`⚠️ Skipped ${validFiles.length - uniqueFiles.length} duplicate(s)`, 'warn');
         }
 
-        mergeFiles = mergeFiles.concat(validFiles);
+        if (uniqueFiles.length === 0) return;
+
+        const isFirstAdd = mergeFiles.length === 0;
+        mergeFiles = mergeFiles.concat(uniqueFiles);
         mergeUploadBox.classList.add('hidden');
         mergeListContainer.classList.remove('hidden');
 
-        if (mergeFiles.length > 0 && !mergeTitleInput.value) {
-            let baseName = mergeFiles[0].name.replace('.epub', '').replace(/\([^\)]+\)/g, '').trim();
-            mergeTitleInput.value = `${baseName} (Merged)`;
+        if (isFirstAdd && mergeFiles.length > 0) {
+            // Auto-prefill Title from filename if not set
+            if (!mergeTitleInput.value) {
+                let baseName = mergeFiles[0].name.replace('.epub', '').replace(/\([^\)]+\)/g, '').trim();
+                mergeTitleInput.value = `${baseName} (Merged)`;
+            }
+
+            // EXTRACT METADATA AND COVER FROM FIRST BOOK
+            try {
+                const firstZip = await new JSZip().loadAsync(mergeFiles[0]);
+                const containerXml = await firstZip.file("META-INF/container.xml").async("text");
+                const parser = new DOMParser();
+                const opfPath = parser.parseFromString(containerXml, "text/xml").querySelector("rootfile").getAttribute("full-path");
+                const opfDir = opfPath.includes("/") ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : "";
+                const opfText = await firstZip.file(opfPath).async("text");
+                const opfDoc = parser.parseFromString(opfText, "text/xml");
+
+                const getTag = (tag) => { const el = opfDoc.getElementsByTagName(tag)[0]; return el ? el.textContent : ''; };
+
+                const title = getTag('dc:title');
+                if (title) mergeTitleInput.value = title + " (Merged)";
+
+                const author = getTag('dc:creator');
+                if (author) document.getElementById('merge-author').value = author;
+
+                const publisher = getTag('dc:publisher');
+                if (publisher) document.getElementById('merge-publisher').value = publisher;
+
+                const language = getTag('dc:language');
+                if (language) document.getElementById('merge-language').value = language;
+
+                // Cover extraction
+                try {
+                    let coverItem = opfDoc.querySelector('item[properties~="cover-image"]');
+                    if (!coverItem) {
+                        const metaCover = opfDoc.querySelector('meta[name="cover"]');
+                        if (metaCover) {
+                            const coverId = metaCover.getAttribute("content");
+                            coverItem = opfDoc.querySelector(`item[id="${coverId}"]`);
+                        }
+                    }
+                    if (!coverItem) {
+                        coverItem = Array.from(opfDoc.querySelectorAll('item[media-type^="image"]')).find(item => {
+                            const h = (item.getAttribute('href') || '').toLowerCase();
+                            const id = (item.getAttribute('id') || '').toLowerCase();
+                            return h.includes('cover') || id.includes('cover');
+                        });
+                    }
+
+                    if (coverItem) {
+                        let coverHref = coverItem.getAttribute("href");
+                        if (coverHref.startsWith('../')) coverHref = coverHref.replace('../', '');
+                        const fullCoverPath = opfDir + coverHref;
+                        const coverFile = firstZip.file(fullCoverPath);
+                        if (coverFile) {
+                            const coverBlob = await coverFile.async("blob");
+                            const blobUrl = URL.createObjectURL(coverBlob);
+                            coverPreview.innerHTML = `<img src="${blobUrl}" class="w-full h-full object-cover">`;
+                            btnRemoveCover.classList.remove('hidden');
+                            customCoverFile = new File([coverBlob], "cover.jpg", { type: "image/jpeg" });
+                        }
+                    }
+                } catch (ce) { console.log("Cover extraction failed", ce); }
+
+            } catch (e) {
+                console.log("Failed to extract metadata from first book", e);
+            }
         }
+
         renderMergeList();
     }
 

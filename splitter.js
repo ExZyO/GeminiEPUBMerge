@@ -1,4 +1,7 @@
 window.initSplitterJs = function () {
+    const container = document.getElementById('view-split');
+    if (!container || container.dataset.init === 'true') return;
+    container.dataset.init = 'true';
     let splitMasterZip = null;
     let splitOpfPath = "";
     let splitOpfDir = "";
@@ -39,17 +42,11 @@ window.initSplitterJs = function () {
     });
 
     // Added target checks to prevent click bubbling
-    document.getElementById('upload-section')?.addEventListener('click', (e) => {
-        if (e.target !== document.getElementById('epub-input')) {
-            document.getElementById('epub-input').click();
-        }
-    });
 
-    document.getElementById('epub-input')?.addEventListener('change', (e) => {
-        if (e.target.files.length > 0) processSplitFile(e.target.files[0]);
-    });
 
-    async function processSplitFile(file) {
+
+
+    window.processSplitFile = async function processSplitFile(file) {
         // Show loading progress for large files
         const loadingWrapper = document.getElementById('loading-progress-wrapper');
         const loadingBar = document.getElementById('loading-progress-bar');
@@ -257,6 +254,9 @@ window.initSplitterJs = function () {
             } catch (e) { /* no metadata */ }
 
             document.getElementById('btn-toggle-metadata')?.addEventListener('click', () => {
+                document.getElementById('metadata-viewer').classList.add('hidden');
+            });
+            document.getElementById('btn-show-metadata')?.addEventListener('click', () => {
                 document.getElementById('metadata-viewer').classList.toggle('hidden');
             });
 
@@ -277,6 +277,22 @@ window.initSplitterJs = function () {
             showToast("Failed to parse EPUB.", "error");
         }
     }
+
+    document.getElementById('btn-reset')?.addEventListener('click', () => {
+        splitMasterZip = null;
+        splitOpfPath = "";
+        splitOpfDir = "";
+        splitOpfDoc = null;
+        allItems = [];
+        spineItems = [];
+        storyChapters = [];
+        frontMatter = [];
+        document.getElementById('editor-section').classList.add('hidden');
+        document.getElementById('upload-section').classList.remove('hidden');
+        document.getElementById('metadata-viewer').classList.add('hidden');
+        const epubInput = document.getElementById('epub-input');
+        if (epubInput) epubInput.value = '';
+    });
 
     async function executeSplit(selectedIdrefs, rangeSuffix) {
         logMsg(`Starting export...`);
@@ -636,7 +652,7 @@ window.initSplitterJs = function () {
         });
     });
 
-    document.getElementById('btn-reset')?.addEventListener('click', () => location.reload());
+
 
     // --- Chapter Search / Filter ---
     document.getElementById('chapter-search')?.addEventListener('input', (e) => {

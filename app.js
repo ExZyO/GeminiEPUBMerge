@@ -1,4 +1,7 @@
 window.initAppJs = function () {
+    const container = document.getElementById('export-history-panel')?.parentElement;
+    if (!container || container.getAttribute('data-app-init') === 'true') return;
+    container.setAttribute('data-app-init', 'true');
     // --- Dark Mode Logic ---
     const themeToggleBtn = document.getElementById('theme-toggle');
     const iconSun = document.getElementById('icon-sun');
