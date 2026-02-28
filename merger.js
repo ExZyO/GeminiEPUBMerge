@@ -197,8 +197,8 @@ window.initMergerJs = function () {
             div.innerHTML = `
             <div class="flex items-start gap-2 min-w-0 flex-1 cursor-move select-none p-1">
                 <span class="text-xs font-bold text-fuchsia-500 mt-2">${idx + 1}.</span>
-                <div class="flex flex-col min-w-0 flex-1 overflow-hidden">
-                    <p class="font-medium text-sm text-slate-500 dark:text-slate-400 truncate w-full" title="${f.name}">${f.name}</p>
+                <div class="flex flex-col min-w-0 flex-1">
+                    <span class="font-medium text-xs leading-snug text-slate-500 dark:text-slate-400 break-words whitespace-normal pb-1">${f.name}</span>
                     <input type="text" class="book-label-input mt-1 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-2 py-1 text-xs font-bold text-slate-800 dark:text-white focus:outline-none focus:ring-1 focus:ring-fuchsia-500" value="${f.customLabel}" placeholder="e.g. Volume 1">
                 </div>
             </div>
