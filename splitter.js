@@ -42,10 +42,15 @@ window.initSplitterJs = function () {
     });
 
     // Added target checks to prevent click bubbling
-
-
-
-
+    window.toggleChapterList = function () {
+        const list = document.getElementById('chapter-list-collapsible');
+        const icon = document.getElementById('toggle-list-icon');
+        if (list && icon) {
+            const isHidden = list.classList.toggle('hidden');
+            icon.style.transform = isHidden ? 'rotate(-90deg)' : 'rotate(0deg)';
+            if (window.showToast) window.showToast(isHidden ? 'Chapter list hidden' : 'Chapter list shown', 'info');
+        }
+    };
     window.processSplitFile = async function processSplitFile(file) {
         // Show loading progress for large files
         const loadingWrapper = document.getElementById('loading-progress-wrapper');

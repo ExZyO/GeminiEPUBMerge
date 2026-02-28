@@ -100,7 +100,7 @@
     // ═══════════════════════════════════════
     // CONSTANTS
     // ═══════════════════════════════════════
-    const VERSION = '4.2.3';
+    const VERSION = '4.3.4';
     const MAX_PAYLOAD = 60000;
     const PROMPT_OVERHEAD = 800;
     const MAX_HISTORY = 20;
@@ -114,13 +114,24 @@
     // ═══════════════════════════════════════
     // UTILITY FUNCTIONS
     // ═══════════════════════════════════════
-    const fetchRetry = async (url, opts, retries = 3) => {
+    const fetchRetry = async (url, opts, retries = 5) => {
       for (let i = 0; i < retries; i++) {
         try {
           const r = await fetch(url, opts);
-          if ((r.status === 429 || r.status >= 500) && i < retries - 1) { await new Promise(t => setTimeout(t, Math.pow(2, i) * 1000)); continue }
+          // Retry on rate limits (429) or server errors (500+)
+          if ((r.status === 429 || r.status >= 500) && i < retries - 1) {
+            const delay = Math.pow(2, i) * 1000 + (Math.random() * 1000);
+            console.warn(`[Retry ${i + 1}/${retries}] Status ${r.status}. Waiting ${Math.round(delay)}ms...`);
+            await new Promise(t => setTimeout(t, delay));
+            continue;
+          }
           return r;
-        } catch (e) { if (i === retries - 1) throw e; await new Promise(t => setTimeout(t, Math.pow(2, i) * 1000)) }
+        } catch (e) {
+          if (i === retries - 1) throw e;
+          const delay = Math.pow(2, i) * 1000 + (Math.random() * 1000);
+          console.warn(`[Retry ${i + 1}/${retries}] Network error: ${e.message}. Waiting ${Math.round(delay)}ms...`);
+          await new Promise(t => setTimeout(t, delay));
+        }
       }
     };
     const wordCount = t => t.trim() ? t.trim().split(/\s+/).length : 0;
@@ -128,17 +139,72 @@
     const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 
     // Parallel batch executor: runs tasks in batches of `concurrency`
-    const batchParallel = async (items, fn, concurrency = 3) => {
+    // Sliding Window Batch Executor: maintains a constant pool of `concurrency` active tasks.
+    // Significantly faster than fixed-batch parallel for varying task durations.
+    const batchConcurrent = async (items, fn, concurrency = 3) => {
       const results = new Array(items.length);
-      for (let i = 0; i < items.length; i += concurrency) {
-        const batch = items.slice(i, i + concurrency);
-        const batchResults = await Promise.allSettled(batch.map((item, idx) => fn(item, i + idx)));
-        batchResults.forEach((r, idx) => { results[i + idx] = r.status === 'fulfilled' ? r.value : { error: r.reason?.message || 'Unknown error' }; });
-      }
+      let currentIndex = 0;
+      const pool = Array(Math.min(concurrency, items.length)).fill(null).map(async () => {
+        while (currentIndex < items.length) {
+          const i = currentIndex++;
+          try {
+            results[i] = await fn(items[i], i);
+          } catch (e) {
+            results[i] = { error: e.message || 'Unknown error' };
+          }
+        }
+      });
+      await Promise.all(pool);
       return results;
     };
     const cleanText = t => { let c = t.replace(/\r\n|\r/g, '\n'); c = c.replace(/[ \t]{2,}/g, ' '); c = c.replace(/(\n\s*){2,}/g, '\n\n'); return c.trim() };
     const copyText = async t => { await navigator.clipboard.writeText(t) };
+
+    // ═══════════════════════════════════════
+    // INDEXEDDB SESSION STORAGE
+    // ═══════════════════════════════════════
+    const SessionDB = {
+      dbName: 'GeminiTranslatorSessions',
+      version: 1,
+      getDB() {
+        return new Promise((res, rej) => {
+          const req = indexedDB.open(this.dbName, this.version);
+          req.onupgradeneeded = e => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains('sessions')) db.createObjectStore('sessions');
+          };
+          req.onsuccess = e => res(e.target.result);
+          req.onerror = e => rej(e.target.error);
+        });
+      },
+      async set(key, value) {
+        const db = await this.getDB();
+        return new Promise((res, rej) => {
+          const tx = db.transaction('sessions', 'readwrite');
+          tx.objectStore('sessions').put(value, key);
+          tx.oncomplete = () => res();
+          tx.onerror = () => rej(tx.error);
+        });
+      },
+      async get(key) {
+        const db = await this.getDB();
+        return new Promise((res, rej) => {
+          const tx = db.transaction('sessions', 'readonly');
+          const req = tx.objectStore('sessions').get(key);
+          req.onsuccess = () => res(req.result);
+          req.onerror = () => rej(req.error);
+        });
+      },
+      async delete(key) {
+        const db = await this.getDB();
+        return new Promise((res, rej) => {
+          const tx = db.transaction('sessions', 'readwrite');
+          tx.objectStore('sessions').delete(key);
+          tx.oncomplete = () => res();
+          tx.onerror = () => rej(tx.error);
+        });
+      }
+    };
 
     const splitChunks = (text, glossaryLen = 0) => {
       let max = MAX_PAYLOAD - PROMPT_OVERHEAD - glossaryLen;
@@ -224,16 +290,19 @@
       const j = await r.json(); return j.translations?.[0]?.text || '';
     };
 
-    const translateLibre = async (text, { srcLang, tgtLang, signal, libreUrl }) => {
+    const translateLibre = async (text, { srcLang, tgtLang, signal, libreUrl, apiKey }) => {
       const tgt = LIBRE_LANG_MAP[tgtLang]; if (!tgt) throw new Error(`LibreTranslate doesn't support ${tgtLang}.`);
       const src = srcLang && srcLang !== 'Auto-detect' ? (LIBRE_LANG_MAP[srcLang] || 'auto') : 'auto';
       const url = libreUrl || 'https://libretranslate.com';
-      const r = await fetchRetry(`${url}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ q: text, source: src, target: tgt, format: 'text' }), signal });
+      const body = { q: text, source: src, target: tgt, format: 'text' };
+      if (apiKey) body.api_key = apiKey;
+      const r = await fetchRetry(`${url}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
       if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`LibreTranslate error ${r.status}: ${b.substring(0, 200)}`); }
       const j = await r.json(); return j.translatedText || '';
     };
 
     const translateOpenAI = async (text, { apiKey, srcLang, tgtLang, glossary, instructions, prevContext }) => {
+      if (!apiKey) throw new Error('OpenAI API key required.');
       const prompt = buildPrompt(text, srcLang, tgtLang, glossary, instructions, prevContext);
       const r = await fetchRetry('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -249,6 +318,7 @@
     };
 
     const translateClaude = async (text, { apiKey, srcLang, tgtLang, glossary, instructions, prevContext }) => {
+      if (!apiKey) throw new Error('Claude API key required.');
       const prompt = buildPrompt(text, srcLang, tgtLang, glossary, instructions, prevContext);
       const r = await fetchRetry('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -308,8 +378,8 @@
       const [progress, setProgress] = useState(0);
       const [progressLabel, setProgressLabel] = useState('');
       const [translatedChapters, setTranslatedChapters] = useState([]);
-      const [hasTextSession, setHasTextSession] = useState(() => localStorage.getItem('translationSessionText') !== null);
-      const [hasEbookSession, setHasEbookSession] = useState(() => localStorage.getItem('translationSessionEbook') !== null);
+      const [hasTextSession, setHasTextSession] = useState(false);
+      const [hasEbookSession, setHasEbookSession] = useState(false);
 
       // --- Provider State ---
       const [provider, setProvider] = useState(() => localStorage.getItem('translationProvider') || 'gemini');
@@ -322,12 +392,17 @@
       const [claudeKey, setClaudeKey] = useState(() => localStorage.getItem('claudeApiKey') || '');
       const [claudeKeyInput, setClaudeKeyInput] = useState(() => localStorage.getItem('claudeApiKey') || '');
       const [libreUrl, setLibreUrl] = useState(() => localStorage.getItem('libreUrl') || 'https://libretranslate.com');
+      const [libreKey, setLibreKey] = useState(() => localStorage.getItem('libreApiKey') || '');
+      const [libreKeyInput, setLibreKeyInput] = useState(() => localStorage.getItem('libreApiKey') || '');
       const [geminiModel, setGeminiModel] = useState(() => localStorage.getItem('geminiModel') || 'gemini-2.5-flash');
       const [availableModels, setAvailableModels] = useState([]);
       const [customModel, setCustomModel] = useState('');
       const [useCustomModel, setUseCustomModel] = useState(false);
       const [showGeminiKey, setShowGeminiKey] = useState(false);
       const [showDeeplKey, setShowDeeplKey] = useState(false);
+      const [showOpenaiKey, setShowOpenaiKey] = useState(false);
+      const [showClaudeKey, setShowClaudeKey] = useState(false);
+      const [showLibreKey, setShowLibreKey] = useState(false);
       const [enableStreaming, setEnableStreaming] = useState(() => localStorage.getItem('enableStreaming') === 'true');
       const [concurrency, setConcurrency] = useState(() => parseInt(localStorage.getItem('concurrency')) || DEFAULT_CONCURRENCY);
 
@@ -351,6 +426,7 @@
       const [history, setHistory] = useState([]);
       const [showHistory, setShowHistory] = useState(false);
       const [showSettings, setShowSettings] = useState(true);
+      const [showHistorySection, setShowHistorySection] = useState(false);
       const [showGlossaryManager, setShowGlossaryManager] = useState(true);
       const [uploadingFile, setUploadingFile] = useState(false);
       const [downloadingPdf, setDownloadingPdf] = useState(false);
@@ -375,9 +451,14 @@
 
       // Check for sessions on mount or when tab changes
       useEffect(() => {
-        setHasTextSession(localStorage.getItem('translationSessionText') !== null);
-        setHasEbookSession(localStorage.getItem('translationSessionEbook') !== null);
-      }, [activeTab]);
+        const checkSessions = async () => {
+          const ts = await SessionDB.get('translationSessionText');
+          const es = await SessionDB.get('translationSessionEbook');
+          setHasTextSession(!!ts);
+          setHasEbookSession(!!es);
+        };
+        checkSessions();
+      }, [activeTab, isTranslating]);
 
       // Initialize Studio Vanilla Scripts
       useEffect(() => {
@@ -440,7 +521,14 @@
       const clearGeminiKey = () => { localStorage.removeItem('geminiApiKey'); setGeminiKey(''); setGeminiKeyInput(''); setAvailableModels([]); toast('Gemini API key cleared.', 'info') };
       const saveDeeplKey = () => { if (!deeplKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('deeplApiKey', deeplKeyInput.trim()); setDeeplKey(deeplKeyInput.trim()); toast('DeepL API key saved!'); setError('') };
       const clearDeeplKey = () => { localStorage.removeItem('deeplApiKey'); setDeeplKey(''); setDeeplKeyInput(''); toast('DeepL API key cleared.', 'info') };
+      const saveOpenaiKey = () => { if (!openaiKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('openaiApiKey', openaiKeyInput.trim()); setOpenaiKey(openaiKeyInput.trim()); toast('OpenAI API key saved!'); setError('') };
+      const clearOpenaiKey = () => { localStorage.removeItem('openaiApiKey'); setOpenaiKey(''); setOpenaiKeyInput(''); toast('OpenAI API key cleared.', 'info') };
+      const saveClaudeKey = () => { if (!claudeKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('claudeApiKey', claudeKeyInput.trim()); setClaudeKey(claudeKeyInput.trim()); toast('Claude API key saved!'); setError('') };
+      const clearClaudeKey = () => { localStorage.removeItem('claudeApiKey'); setClaudeKey(''); setClaudeKeyInput(''); toast('Claude API key cleared.', 'info') };
       const saveLibreUrl = () => { localStorage.setItem('libreUrl', libreUrl); toast('LibreTranslate URL saved!') };
+      const clearLibreUrl = () => { setLibreUrl('https://libretranslate.com'); localStorage.setItem('libreUrl', 'https://libretranslate.com'); toast('LibreTranslate URL reset.', 'info') };
+      const saveLibreKey = () => { if (!libreKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('libreApiKey', libreKeyInput.trim()); setLibreKey(libreKeyInput.trim()); toast('LibreTranslate API key saved!'); setError('') };
+      const clearLibreKey = () => { localStorage.removeItem('libreApiKey'); setLibreKey(''); setLibreKeyInput(''); toast('LibreTranslate API key cleared.', 'info') };
 
       // --- Glossary Handlers ---
       const handleSaveGlossary = () => { if (!newGlossaryName.trim()) return setError('Enter a glossary name.'); if (!terminology.trim()) return setError('Glossary content is empty.'); const existing = savedGlossaries.findIndex(g => g.name === newGlossaryName.trim()); if (existing > -1) { confirmAction(`Overwrite "${newGlossaryName.trim()}"?`, () => { const u = [...savedGlossaries]; u[existing] = { name: newGlossaryName.trim(), content: terminology }; setSavedGlossaries(u); localStorage.setItem('savedGlossaries', JSON.stringify(u)); setNewGlossaryName(''); setActiveGlossaryId(newGlossaryName.trim()); toast('Glossary updated!') }) } else { const u = [...savedGlossaries, { name: newGlossaryName.trim(), content: terminology }]; setSavedGlossaries(u); localStorage.setItem('savedGlossaries', JSON.stringify(u)); setNewGlossaryName(''); setActiveGlossaryId(newGlossaryName.trim()); setError(''); toast('Glossary saved!') } };
@@ -464,10 +552,10 @@
 
       // --- Translation ---
       const getTranslateOpts = (signal) => {
-        const o = { srcLang, tgtLang, glossary: terminology, instructions: customInstructions, signal, concurrency, prevContext: '' };
+        const o = { provider, srcLang, tgtLang, glossary: terminology, instructions: customInstructions, signal, concurrency, prevContext: '' };
         if (provider === 'gemini') { const m = useCustomModel && customModel ? customModel : geminiModel; return { ...o, apiKey: geminiKey, model: m } }
         if (provider === 'deepl') return { ...o, apiKey: deeplKey }
-        if (provider === 'libre') return { ...o, libreUrl: libreUrl, apiKey: keys?.libreKey || '' }
+        if (provider === 'libre') return { ...o, libreUrl: libreUrl, apiKey: libreKey }
         if (provider === 'openai') return { ...o, apiKey: openaiKey }
         if (provider === 'claude') return { ...o, apiKey: claudeKey }
         return o;
@@ -483,21 +571,21 @@
 
         if (isResume) {
           try {
-            const session = JSON.parse(localStorage.getItem('translationSessionText'));
+            const session = await SessionDB.get('translationSessionText');
             if (session && session.originalText === inputText) {
               initialResult = session.result;
               startIndex = session.currentIndex;
               prevContext = session.prevContext || '';
               setProgressLabel(`Resuming from chunk ${startIndex + 1}...`);
             } else {
-              localStorage.removeItem('translationSessionText');
+              await SessionDB.delete('translationSessionText');
               setHasTextSession(false);
             }
           } catch (e) { console.error("Session parse error", e); }
         } else {
           setAssembledText('');
           setTranslatedChapters([]);
-          localStorage.removeItem('translationSessionText');
+          await SessionDB.delete('translationSessionText');
         }
 
         const ctrl = new AbortController(); abortRef.current = ctrl;
@@ -517,16 +605,16 @@
               prevContext = result.slice(-500);
               setProgress(Math.floor(((i + 1) / chunks.length) * 100));
 
-              localStorage.setItem('translationSessionText', JSON.stringify({
+              await SessionDB.set('translationSessionText', {
                 originalText: inputText,
                 result,
                 currentIndex: i + 1,
                 prevContext
-              }));
+              });
               setHasTextSession(true);
             }
             setTranslatedChapters([{ title: 'Translated Document', content: result }]);
-            localStorage.removeItem('translationSessionText');
+            await SessionDB.delete('translationSessionText');
             setHasTextSession(false);
           } else {
             // Parallel batch translation
@@ -538,7 +626,7 @@
             // But we can slice from the original text (or just not use prevContext for parallel).
             // We follow the report and use the context-aware pipeline, which strongly implies sequential for maximum quality,
             // but we'll supply a rough prevContext if possible.
-            const results = await batchParallel(chunks.slice(startIndex), async (chunk, idx) => {
+            const results = await batchConcurrent(chunks.slice(startIndex), async (chunk, idx) => {
               const translated = await translateChunk(chunk, opts); // Passing general opts, no prevContext for parallel batch to avoid hallucination races
               completed++; setProgress(Math.floor((completed / chunks.length) * 100));
               setProgressLabel(`Completed ${completed}/${chunks.length} chunks`);
@@ -548,7 +636,7 @@
             const translated = results.map(r => typeof r === 'string' ? r : (r?.error ? `\n\n[Error: ${r.error}]\n\n` : ''));
             const finalResult = (initialResult + translated.join('')).replace(/\r\n/g, '\n').trim();
             setAssembledText(finalResult); setTranslatedChapters([{ title: 'Translated Document', content: finalResult }]);
-            localStorage.removeItem('translationSessionText');
+            await SessionDB.delete('translationSessionText');
             setHasTextSession(false);
           }
           addToHistory(srcLang, tgtLang, provider, inputText, assembledText || 'See output');
@@ -574,7 +662,7 @@
 
         if (isResume) {
           try {
-            const session = JSON.parse(localStorage.getItem('translationSessionEbook'));
+            const session = await SessionDB.get('translationSessionEbook');
             if (session) {
               allParts = session.allParts || [];
               newChapters = session.newChapters || [];
@@ -589,7 +677,7 @@
         } else {
           setAssembledText('');
           setTranslatedChapters([]);
-          localStorage.removeItem('translationSessionEbook');
+          await SessionDB.delete('translationSessionEbook');
         }
 
         const ctrl = new AbortController(); abortRef.current = ctrl;
@@ -616,7 +704,7 @@
 
               // Process EPUB nodes. Stream is awkward for thousands of tiny nodes, so we force parallel batch 
               // for structural preservation to limit time processing taking forever.
-              const nodeResults = await batchParallel(ch.nodes, async (nodeObj, idx) => {
+              const nodeResults = await batchConcurrent(ch.nodes, async (nodeObj, idx) => {
                 const txt = nodeObj.originalText;
                 if (!txt.trim() || /\w/.test(txt) === false) return txt; // skip whitespace-only or non-word nodes
 
@@ -652,7 +740,7 @@
                 }
               } else {
                 setProgressLabel(`Chapter ${i + 1}/${chapters.length}: translating ${chunks.length} chunk(s) in parallel...`);
-                const results = await batchParallel(chunks, async (chunk, idx) => {
+                const results = await batchConcurrent(chunks, async (chunk, idx) => {
                   const translated = await translateChunk(chunk, opts);
                   done++; setProgress(Math.floor((done / totalChunks) * 100));
                   setProgressLabel(`Chapter ${i + 1}/${chapters.length}: ${done}/${totalChunks} done`);
@@ -666,13 +754,13 @@
             newChapters.push({ originalTitle: ch.title, title, content }); allParts.push(`${title}\n\n${content}`);
             setTranslatedChapters([...newChapters]); setAssembledText(allParts.join('\n\n\n').trim());
 
-            localStorage.setItem('translationSessionEbook', JSON.stringify({
+            await SessionDB.set('translationSessionEbook', {
               allParts,
               newChapters,
               currentChapterIndex: i + 1,
               doneChunks: done,
               prevContext
-            }));
+            });
             setHasEbookSession(true);
 
             // Allow partial downloads explicitly by mutating window globals incrementally
@@ -689,7 +777,7 @@
 
           const final = allParts.join('\n\n\n').trim();
           addToHistory(srcLang, tgtLang, provider, '[File upload]', final.substring(0, 2000));
-          localStorage.removeItem('translationSessionEbook');
+          await SessionDB.delete('translationSessionEbook');
           setHasEbookSession(false);
           toast('Translation complete!');
         } catch (e) {
@@ -1019,7 +1107,7 @@
 
           // TABS
           h('div', { className: 'flex border-b border-gray-200 dark:border-gray-700 gap-1 overflow-x-auto' },
-            [['text', 'Text & File', Clipboard], ['history', 'History', History], ['url', 'URL (Info)', Link], ['studio', 'EPUB Studio', Layers]].map(([key, label, Icon]) =>
+            [['text', 'Text & File', Clipboard], ['url', 'URL (Info)', Link], ['studio', 'EPUB Studio', Layers]].map(([key, label, Icon]) =>
               h('button', { key, onClick: () => setActiveTab(key), className: `py-2.5 px-4 text-sm font-semibold rounded-t-lg transition-colors flex items-center gap-2 whitespace-nowrap ${activeTab === key ? 'bg-indigo-600 text-white shadow-md' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}` }, ic(Icon, 18), label)
             )
           ),
@@ -1031,12 +1119,12 @@
             h('div', { className: 'grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800' },
               h('div', null,
                 h('label', { className: 'block text-sm font-semibold mb-1' }, 'Translation Provider'),
-                h('select', { value: provider, onChange: e => { setProvider(e.target.value) }, disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' },
+                h('select', { value: provider, onChange: e => { setProvider(e.target.value) }, disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500 font-medium' },
                   h('option', { value: 'gemini' }, 'Gemini (AI)'),
-                  h('option', { value: 'openai' }, 'ChatGPT (OpenAI)'),
+                  h('option', { value: 'openai' }, 'ChatGPT / GPT-4'),
                   h('option', { value: 'claude' }, 'Claude (Anthropic)'),
                   h('option', { value: 'deepl' }, 'DeepL'),
-                  h('option', { value: 'libre' }, 'LibreTranslate (Free)')
+                  h('option', { value: 'libre' }, 'LibreTranslate')
                 )
               ),
               provider === 'gemini' && h('div', null,
@@ -1209,75 +1297,96 @@
               secHeader('Settings & API Keys', Settings, showSettings, () => setShowSettings(!showSettings)),
               h('div', { className: `collapsible ${showSettings ? 'open' : ''}` },
                 h('div', { className: 'p-4 space-y-4' },
-                  // Gemini Key
-                  h('div', null,
-                    h('label', { className: 'block text-sm font-semibold mb-1' }, 'Gemini API Key'),
-                    h('div', { className: 'flex gap-2' },
-                      h('div', { className: 'relative flex-1' },
-                        h('input', { type: showGeminiKey ? 'text' : 'password', value: geminiKeyInput, onChange: e => setGeminiKeyInput(e.target.value), disabled, placeholder: 'Enter Gemini API key...', className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
-                        btn({ onClick: () => setShowGeminiKey(!showGeminiKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600', 'aria-label': 'Toggle key visibility' }, ic(showGeminiKey ? EyeOff : Eye, 16))
+                  // Dynamic Active Provider Header
+                  h('div', { className: 'p-4 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl mb-6 shadow-sm' },
+                    h('p', { className: 'text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider mb-2 flex items-center gap-2' }, ic(Zap, 14), `Active: ${provider.toUpperCase()}`),
+                    provider === 'gemini' && h('div', { className: 'space-y-3' },
+                      h('div', { className: 'relative' },
+                        h('input', { type: showGeminiKey ? 'text' : 'password', value: geminiKeyInput, onChange: e => setGeminiKeyInput(e.target.value), placeholder: 'Gemini API Key...', className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
+                        btn({ onClick: () => setShowGeminiKey(!showGeminiKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400' }, ic(showGeminiKey ? EyeOff : Eye, 16))
+                      ),
+                      h('div', { className: 'flex gap-2' },
+                        btn({ onClick: saveGeminiKey, className: 'px-4 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 shadow-sm transition-all' }, 'Save Gemini Key'),
+                        btn({ onClick: clearGeminiKey, className: 'px-4 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 shadow-sm transition-all' }, 'Clear')
                       )
                     ),
-                    h('div', { className: 'flex flex-wrap gap-2 mt-2' },
-                      btn({ onClick: saveGeminiKey, className: 'px-3 py-1.5 bg-green-500 text-white text-xs font-semibold rounded-lg hover:bg-green-600' }, 'Save'),
-                      btn({ onClick: async () => { try { const t = await navigator.clipboard.readText(); setGeminiKeyInput(t); toast('Pasted!') } catch (e) { } }, className: 'px-3 py-1.5 bg-blue-500 text-white text-xs font-semibold rounded-lg hover:bg-blue-600' }, 'Paste'),
-                      btn({ onClick: clearGeminiKey, className: 'px-3 py-1.5 bg-red-500 text-white text-xs font-semibold rounded-lg hover:bg-red-600' }, 'Clear')
+                    ['openai', 'claude', 'deepl'].includes(provider) && h('div', { className: 'space-y-3' },
+                      h('div', { className: 'relative' },
+                        h('input', { type: provider === 'openai' ? (showOpenaiKey ? 'text' : 'password') : provider === 'claude' ? (showClaudeKey ? 'text' : 'password') : (showDeeplKey ? 'text' : 'password'), value: provider === 'openai' ? openaiKeyInput : provider === 'claude' ? claudeKeyInput : deeplKeyInput, onChange: e => provider === 'openai' ? setOpenaiKeyInput(e.target.value) : provider === 'claude' ? setClaudeKeyInput(e.target.value) : setDeeplKeyInput(e.target.value), placeholder: `${provider.toUpperCase()} API Key...`, className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
+                        btn({ onClick: () => provider === 'openai' ? setShowOpenaiKey(!showOpenaiKey) : provider === 'claude' ? setShowClaudeKey(!showClaudeKey) : setShowDeeplKey(!showDeeplKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400' }, ic((provider === 'openai' ? showOpenaiKey : provider === 'claude' ? showClaudeKey : showDeeplKey) ? EyeOff : Eye, 16))
+                      ),
+                      h('div', { className: 'flex gap-2' },
+                        btn({ onClick: provider === 'openai' ? saveOpenaiKey : provider === 'claude' ? saveClaudeKey : saveDeeplKey, className: 'px-4 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 shadow-sm transition-all' }, `Save ${provider.toUpperCase()} Key`),
+                        btn({ onClick: provider === 'openai' ? clearOpenaiKey : provider === 'claude' ? clearClaudeKey : clearDeeplKey, className: 'px-4 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 shadow-sm transition-all' }, 'Clear')
+                      )
                     ),
-                    geminiKey && h('p', { className: 'text-xs text-green-600 dark:text-green-400 mt-1' }, '✓ Gemini API key saved. ', availableModels.length > 0 && `${availableModels.length} models available.`)
+                    provider === 'libre' && h('div', { className: 'space-y-3' },
+                      h('div', { className: 'flex gap-2' },
+                        h('input', { type: 'text', value: libreUrl, onChange: e => setLibreUrl(e.target.value), placeholder: 'LibreTranslate URL...', className: 'w-full p-2.5 border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
+                        btn({ onClick: saveLibreUrl, className: 'px-4 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 shadow-sm transition-all' }, 'Save URL'),
+                        btn({ onClick: clearLibreUrl, className: 'px-4 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 shadow-sm transition-all' }, 'Reset')
+                      ),
+                      h('div', { className: 'relative' },
+                        h('input', { type: showLibreKey ? 'text' : 'password', value: libreKeyInput, onChange: e => setLibreKeyInput(e.target.value), placeholder: 'LibreTranslate API Key (Optional)...', className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
+                        btn({ onClick: () => setShowLibreKey(!showLibreKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400' }, ic(showLibreKey ? EyeOff : Eye, 16))
+                      ),
+                      h('div', { className: 'flex gap-2' },
+                        btn({ onClick: saveLibreKey, className: 'px-4 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 shadow-sm transition-all' }, 'Save Libre Key'),
+                        btn({ onClick: clearLibreKey, className: 'px-4 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 shadow-sm transition-all' }, 'Clear')
+                      )
+                    )
                   ),
-                  // DeepL Key
-                  (provider === 'deepl' || deeplKey) && h('div', null,
-                    h('label', { className: 'block text-sm font-semibold mb-1' }, 'DeepL API Key'),
-                    h('div', { className: 'relative' },
-                      h('input', { type: showDeeplKey ? 'text' : 'password', value: deeplKeyInput, onChange: e => setDeeplKeyInput(e.target.value), disabled, placeholder: 'Enter DeepL API key...', className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
-                      btn({ onClick: () => setShowDeeplKey(!showDeeplKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600', 'aria-label': 'Toggle key visibility' }, ic(showDeeplKey ? EyeOff : Eye, 16))
-                    ),
-                    h('div', { className: 'flex gap-2 mt-2' },
-                      btn({ onClick: saveDeeplKey, className: 'px-3 py-1.5 bg-green-500 text-white text-xs font-semibold rounded-lg hover:bg-green-600' }, 'Save'),
-                      btn({ onClick: clearDeeplKey, className: 'px-3 py-1.5 bg-red-500 text-white text-xs font-semibold rounded-lg hover:bg-red-600' }, 'Clear')
-                    ),
-                    deeplKey && h('p', { className: 'text-xs text-green-600 dark:text-green-400 mt-1' }, '✓ DeepL API key saved.'),
-                    h('p', { className: 'text-xs text-gray-400 mt-1' }, 'Free tier: 500K chars/month. Key ending in :fx uses free endpoint.')
-                  ),
-                  // LibreTranslate URL
-                  provider === 'libre' && h('div', null,
-                    h('label', { className: 'block text-sm font-semibold mb-1' }, 'LibreTranslate URL'),
-                    h('div', { className: 'flex gap-2' },
-                      h('input', { type: 'text', value: libreUrl, onChange: e => setLibreUrl(e.target.value), className: 'flex-1 p-2.5 border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
-                      btn({ onClick: saveLibreUrl, className: 'px-3 py-1.5 bg-green-500 text-white text-xs font-semibold rounded-lg hover:bg-green-600' }, 'Save')
-                    ),
-                    h('p', { className: 'text-xs text-gray-400 mt-1' }, 'Default: libretranslate.com. Use your own instance for better reliability.')
+
+                  h('p', { className: 'text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mt-6' }, 'Provider Status'),
+                  h('div', { className: 'grid grid-cols-2 gap-3 mt-2' },
+                    [
+                      { id: 'gemini', label: 'Gemini', key: geminiKey },
+                      { id: 'openai', label: 'OpenAI', key: openaiKey },
+                      { id: 'claude', label: 'Claude', key: claudeKey },
+                      { id: 'deepl', label: 'DeepL', key: deeplKey },
+                      { id: 'libre', label: 'Libre', key: libreKey }
+                    ].map(p => h('div', {
+                      key: p.id,
+                      onClick: () => { setProvider(p.id); toast(`Switched to ${p.label}`) },
+                      className: `flex items-center justify-between p-3 border rounded-xl transition-all cursor-pointer group hover:border-indigo-400 hover:bg-indigo-50/50 dark:hover:bg-indigo-900/10 ${provider === p.id ? 'border-indigo-500 bg-indigo-500/5 shadow-inner' : 'border-gray-200 dark:border-gray-800'}`
+                    },
+                      h('span', { className: `text-xs font-semibold ${provider === p.id ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-600 dark:text-gray-400 group-hover:text-indigo-500'}` }, p.label),
+                      h('div', { className: `w-2 h-2 rounded-full ${p.key ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.3)]' : 'bg-gray-300 dark:bg-gray-700'}` })
+                    ))
                   )
                 )
               )
-            )
-          ),
-
-          // TAB: HISTORY
-          activeTab === 'history' && h('div', { className: 'space-y-4' },
-            h('div', { className: 'flex items-center justify-between' },
-              h('h2', { className: 'text-xl font-bold' }, 'Translation History'),
-              history.length > 0 && btn({ onClick: clearHistory, className: 'px-3 py-1.5 bg-red-500 text-white text-xs font-semibold rounded-lg hover:bg-red-600 inline-flex items-center gap-1' }, ic(Trash2, 14), 'Clear All')
             ),
-            history.length === 0 ? h('p', { className: 'text-gray-500 dark:text-gray-400 text-center py-8' }, 'No translation history yet.') :
-              h('div', { className: 'space-y-3' }, history.map(entry =>
-                h('div', { key: entry.id, className: 'p-4 bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800' },
-                  h('div', { className: 'flex items-center justify-between mb-2' },
-                    h('div', { className: 'flex items-center gap-2 text-xs text-gray-500' },
-                      h('span', { className: 'font-medium text-indigo-600 dark:text-indigo-400' }, entry.provider),
-                      h('span', null, '·'),
-                      h('span', null, `${entry.srcLang || 'Auto'} → ${entry.tgtLang}`),
-                      h('span', null, '·'),
-                      h('span', null, new Date(entry.ts).toLocaleString())
-                    ),
-                    h('div', { className: 'flex gap-1' },
-                      btn({ onClick: () => loadFromHistory(entry), className: 'px-2.5 py-1 text-xs bg-blue-500 text-white rounded hover:bg-blue-600' }, 'Load'),
-                      btn({ onClick: () => deleteHistoryItem(entry.id), className: 'px-2.5 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600' }, 'Del')
-                    )
+
+            // Translation History (embedded inside Text & File)
+            h('div', { className: 'bg-white dark:bg-gray-900 rounded-xl border border-gray-200 dark:border-gray-800 overflow-hidden' },
+              secHeader('Translation History', History, showHistorySection, () => setShowHistorySection(!showHistorySection)),
+              h('div', { className: `collapsible ${showHistorySection ? 'open' : ''}` },
+                h('div', { className: 'p-4 space-y-4' },
+                  h('div', { className: 'flex items-center justify-between' },
+                    h('h2', { className: 'text-lg font-bold text-gray-800 dark:text-gray-200' }, 'Saved Translations'),
+                    history.length > 0 && btn({ onClick: clearHistory, className: 'px-3 py-1.5 bg-red-500 text-white text-xs font-semibold rounded-lg hover:bg-red-600 inline-flex items-center gap-1' }, ic(Trash2, 14), 'Clear All')
                   ),
-                  h('p', { className: 'text-sm text-gray-600 dark:text-gray-400 line-clamp-2' }, entry.outputPreview || entry.inputPreview)
+                  history.length === 0 ? h('p', { className: 'text-gray-500 dark:text-gray-400 text-center py-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-dashed border-gray-300 dark:border-gray-700' }, 'No translation history yet.') :
+                    h('div', { className: 'space-y-3 max-h-96 overflow-y-auto custom-scrollbar pr-2' }, history.map(entry =>
+                      h('div', { key: entry.id, className: 'p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-700 transition-colors' },
+                        h('div', { className: 'flex items-center justify-between mb-2' },
+                          h('div', { className: 'flex flex-wrap items-center gap-2 text-xs text-gray-500' },
+                            h('span', { className: 'font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-0.5 rounded' }, entry.provider),
+                            h('span', null, `${entry.srcLang || 'Auto'} → ${entry.tgtLang}`),
+                            h('span', { className: 'text-gray-400' }, new Date(entry.ts).toLocaleString())
+                          ),
+                          h('div', { className: 'flex gap-1 shrink-0 ml-2' },
+                            btn({ onClick: () => loadFromHistory(entry), className: 'px-2.5 py-1.5 text-xs bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400 font-semibold rounded hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition-colors' }, 'Load'),
+                            btn({ onClick: () => deleteHistoryItem(entry.id), className: 'px-2.5 py-1.5 text-xs bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400 font-semibold rounded hover:bg-red-100 dark:hover:bg-red-900/50 transition-colors' }, 'Delete')
+                          )
+                        ),
+                        h('p', { className: 'text-sm text-gray-700 dark:text-gray-300 line-clamp-3 bg-white dark:bg-gray-900 p-3 rounded-lg border border-gray-100 dark:border-gray-800' }, entry.outputPreview || entry.inputPreview)
+                      )
+                    ))
                 )
-              ))
+              )
+            )
           ),
 
           // TAB: URL INFO
@@ -1548,51 +1657,59 @@
                                   class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-6 rounded-2xl shadow-sm flex-1 flex flex-col min-h-[400px]">
                                   <div class="flex items-center justify-between mb-4">
                                       <div>
-                                          <h3 class="text-lg font-bold text-slate-800 dark:text-white">📋 Chapter
-                                              Selection</h3>
+                                          <h3 class="text-lg font-bold text-slate-800 dark:text-white">📋 Chapter Selection</h3>
                                       </div>
-                                      <span id="preview-count"
-                                          class="text-xs font-mono bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 px-3 py-1 rounded-full whitespace-nowrap">0
-                                          selected</span>
+                                      <div class="flex items-center gap-2">
+                                          <span id="preview-count"
+                                              class="text-xs font-mono bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 px-3 py-1 rounded-full whitespace-nowrap">0 selected</span>
+                                          <button type="button" id="btn-toggle-chapter-list" onclick="window.toggleChapterList()" 
+                                              class="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-md transition-colors" title="Toggle Chapter List">
+                                              <svg id="toggle-list-icon" class="w-5 h-5 transition-transform" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                                                  <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" />
+                                              </svg>
+                                          </button>
+                                      </div>
                                   </div>
-  
-                                  <div class="flex gap-2 mb-4">
-                                       <button type="button" id="btn-export-custom"
-                                          class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50">
-                                          Download Checked
-                                      </button>
-                                       <button type="button" id="btn-share-export"
-                                          class="px-4 bg-slate-600 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50"
-                                          title="Share via Web Share API">
-                                          📤
-                                      </button>
-                                  </div>
-  
-                                  <!-- Estimated output size -->
-                                  <div id="estimated-size"
-                                      class="hidden mb-3 text-xs font-bold text-slate-400 dark:text-slate-500 text-center">
-                                      Estimated output: <span id="estimated-size-value">0</span> MB
-                                  </div>
-  
-                                  <div class="flex items-center gap-2 mb-3 flex-wrap">
-                                       <button type="button" id="btn-select-all"
-                                          class="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline">Select
-                                          All</button>
-                                      <span class="text-slate-300 dark:text-slate-600">|</span>
-                                       <button type="button" id="btn-deselect-all"
-                                          class="text-xs font-bold text-slate-500 hover:underline">Deselect All</button>
-                                      <span class="text-slate-300 dark:text-slate-600">|</span>
-                                       <button type="button" id="btn-batch-rename"
-                                          class="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline">Batch
-                                          Rename</button>
-                                  </div>
-  
-                                  <!-- Chapter Search -->
-                                  <input type="text" id="chapter-search" placeholder="🔍 Search chapters..."
-                                      class="w-full mb-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-400">
-  
-                                  <div id="chapter-list"
-                                      class="flex-1 overflow-y-auto custom-scrollbar text-sm bg-slate-50 dark:bg-slate-900/50 rounded-xl p-2 border border-slate-200 dark:border-slate-700 divide-y divide-slate-200 dark:divide-slate-700/50 font-mono">
+
+                                  <div id="chapter-selection-content" class="flex flex-col flex-1 min-h-0">
+                                      <div class="flex gap-2 mb-4">
+                                           <button type="button" id="btn-export-custom"
+                                              class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50">
+                                              Download Checked
+                                          </button>
+                                           <button type="button" id="btn-share-export"
+                                              class="px-4 bg-slate-600 hover:bg-slate-700 text-white font-bold py-3.5 rounded-xl transition-colors shadow-sm disabled:opacity-50"
+                                              title="Share via Web Share API">
+                                              📤
+                                          </button>
+                                      </div>
+
+                                      <!-- Estimated output size -->
+                                      <div id="estimated-size"
+                                          class="hidden mb-3 text-xs font-bold text-slate-400 dark:text-slate-500 text-center">
+                                          Estimated output: <span id="estimated-size-value">0</span> MB
+                                      </div>
+
+                                      <div id="chapter-list-collapsible" class="flex flex-col flex-1 min-h-0">
+                                          <div class="flex items-center gap-2 mb-3 flex-wrap">
+                                               <button type="button" id="btn-select-all"
+                                                  class="text-xs font-bold text-indigo-600 dark:text-indigo-400 hover:underline">Select All</button>
+                                              <span class="text-slate-300 dark:text-slate-600">|</span>
+                                               <button type="button" id="btn-deselect-all"
+                                                  class="text-xs font-bold text-slate-500 hover:underline">Deselect All</button>
+                                              <span class="text-slate-300 dark:text-slate-600">|</span>
+                                               <button type="button" id="btn-batch-rename"
+                                                  class="text-xs font-bold text-emerald-600 dark:text-emerald-400 hover:underline">Batch Rename</button>
+                                          </div>
+
+                                          <!-- Chapter Search -->
+                                          <input type="text" id="chapter-search" placeholder="🔍 Search chapters..."
+                                              class="w-full mb-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500 placeholder-slate-400">
+
+                                          <div id="chapter-list"
+                                              class="flex-1 overflow-y-auto custom-scrollbar text-sm bg-slate-50 dark:bg-slate-900/50 rounded-xl p-2 border border-slate-200 dark:border-slate-700 divide-y divide-slate-200 dark:divide-slate-700/50 font-mono">
+                                          </div>
+                                      </div>
                                   </div>
                               </div>
   
