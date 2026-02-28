@@ -1,0 +1,83 @@
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="BookID">
+  <metadata xmlns:opf="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:calibre="http://calibre.kovidgoyal.net/2009/metadata">
+    <dc:title>【世界正义】DOWN (3-3)</dc:title>
+    <meta name="calibre:timestamp" content="2025-09-04T08:16:11.044518+00:00"/>
+    <dc:language>zh</dc:language>
+    <dc:creator opf:file-as="louisiana_num67" opf:role="aut">Louisiana_Num67</dc:creator>
+    <dc:identifier id="uuid_id" opf:scheme="uuid">ed5d2823-3149-47e8-a06c-02d5cd9d4b42</dc:identifier>
+    <meta name="calibre:title_sort" content="【世界正义】down"/>
+    <dc:description>&lt;p&gt;“当你凝视深渊的时候。”&lt;br /&gt;星际哨向，有一定私设。包括但不限于哨向方面的部分私设、原创龙套添加、部分原作中无姓氏角色的添加姓氏。&lt;br /&gt;本文共分为三个part，因此每章小标题为当前所属part，而非章节名。&lt;/p&gt;</dc:description>
+    <dc:publisher>Archive of Our Own</dc:publisher>
+    <dc:subject>Fanworks</dc:subject>
+    <dc:subject>Not Rated</dc:subject>
+    <dc:subject>诡秘之主 - 爱潜水的乌贼 | Lord of the Mysteries - Cuttlefish that Loves Diving</dc:subject>
+    <dc:subject>世界正义</dc:subject>
+    <dc:subject>Audrey Hall | Justice/Klein Moretti</dc:subject>
+    <dc:subject>克莱恩·莫雷蒂</dc:subject>
+    <dc:subject>奥黛丽·霍尔</dc:subject>
+    <dc:subject>Audrey Hall | Justice</dc:subject>
+    <dc:subject>Klein Moretti</dc:subject>
+    <dc:subject>哨向pa</dc:subject>
+    <dc:subject>未来星际</dc:subject>
+    <dc:subject>F/M</dc:subject>
+    <dc:subject>Choose Not To Use Archive Warnings</dc:subject>
+    <dc:subject>Sentinel/Guide Bonding</dc:subject>
+    <dc:subject>Alternate Universe - Science Fiction</dc:subject>
+    <dc:date>2023-03-21T00:00:00+00:00</dc:date>
+  <dc:identifier id="BookID">urn:uuid:0cf5fb73-90fa-4f07-a918-e360d6a596c8</dc:identifier></metadata>
+  <manifest>
+    
+    
+    <item id="html22" href="Shi_Jie_Zheng_Yi_DOWN_split_002.xhtml" media-type="application/xhtml+xml"/>
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    <item id="page_css" href="page_styles.css" media-type="text/css"/>
+    <item id="css" href="stylesheet.css" media-type="text/css"/>
+    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
+  </manifest>
+  <spine toc="ncx">
+    
+    
+    <itemref idref="html22"/>
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+  </spine>
+</package>

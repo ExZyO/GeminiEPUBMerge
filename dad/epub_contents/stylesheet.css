@@ -1,0 +1,103 @@
+.byline {
+  display: block;
+  text-align: center;
+}
+.calibre {
+  display: block;
+  font-size: 1em;
+  padding-left: 0;
+  padding-right: 0;
+  margin: 0 5pt;
+}
+.calibre1 {
+  display: block;
+}
+.calibre2 {
+  font-weight: bold;
+}
+.calibre3 {
+  display: block;
+  font-weight: bold;
+  margin: 0;
+}
+.calibre4 {
+  display: block;
+  margin: 0 0 1em 1em;
+}
+.calibre5 {
+  display: block;
+  margin: 0 0 0 1em;
+}
+.calibre6 {
+  display: block;
+  font-size: 1.41667em;
+  font-weight: bold;
+  line-height: 1.2;
+  text-align: center;
+  margin: 0.67em 0;
+}
+.calibre7 {
+  display: block;
+  margin: 1em 0;
+}
+.calibre8 {
+  display: block;
+}
+.calibre9 {
+  font-style: italic;
+}
+.calibre10 {
+  text-decoration: underline;
+}
+.calibre11 {
+  display: block;
+  text-align: right;
+  margin: 1em 0;
+}
+.endnote-link {
+  display: block;
+  font-size: 0.75em;
+}
+.heading {
+  display: block;
+  font-size: 1.41667em;
+  font-weight: bold;
+  line-height: 1.2;
+  text-align: center;
+  margin: 0.83em 0;
+}
+.message {
+  display: block;
+  text-align: center;
+  margin: 1em 0;
+}
+.tags {
+  display: block;
+  margin: 1em 0;
+  padding: 0;
+  border: currentColor none medium;
+}
+.toc-heading {
+  display: none;
+  font-size: 1.41667em;
+  font-weight: bold;
+  line-height: 1.2;
+  margin: 0.83em 0;
+}
+.userstuff {
+  display: block;
+  font-family: serif;
+  margin: 1em;
+  padding: 0;
+}
+.userstuff1 {
+  display: block;
+  font-family: serif;
+  padding: 0;
+}
+.userstuff2 {
+  display: block;
+  font-family: serif;
+  margin: 1em 0;
+  padding: 0;
+}
