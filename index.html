@@ -100,7 +100,7 @@
     // ═══════════════════════════════════════
     // CONSTANTS
     // ═══════════════════════════════════════
-    const VERSION = '4.4.1';
+    const VERSION = '4.4.2';
     const MAX_PAYLOAD = 60000;
     const PROMPT_OVERHEAD = 800;
     const MAX_HISTORY = 20;
@@ -1728,7 +1728,7 @@
   
           <div id="view-merge"
               class="hidden bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors duration-300">
-              <input type="file" id="merge-input" accept=".epub,application/epub+zip" multiple class="hidden" onchange="if(this.files.length>0 && window.handleMergeFiles) window.handleMergeFiles(Array.from(this.files))" />
+              <input type="file" id="merge-input" accept=".epub,application/epub+zip,application/zip,application/octet-stream" multiple class="hidden" onchange="if(this.files.length>0 && window.handleMergeFiles) window.handleMergeFiles(Array.from(this.files))" />
               <div id="merge-upload-box"
                   class="p-12 sm:p-20 text-center hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors cursor-pointer group border-b-4 border-indigo-500"
                   onclick="if(event.target.id !== 'merge-input') document.getElementById('merge-input').click()"
