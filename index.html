@@ -100,7 +100,7 @@
     // ═══════════════════════════════════════
     // CONSTANTS
     // ═══════════════════════════════════════
-    const VERSION = '4.4.0';
+    const VERSION = '4.4.1';
     const MAX_PAYLOAD = 60000;
     const PROMPT_OVERHEAD = 800;
     const MAX_HISTORY = 20;
@@ -1448,7 +1448,7 @@
                   onclick="if(event.target.id !== 'epub-input') document.getElementById('epub-input').click()"
                   ondragover="event.preventDefault(); this.classList.add('ring-4','ring-indigo-400');"
                   ondragleave="this.classList.remove('ring-4','ring-indigo-400');"
-                  ondrop="event.preventDefault(); this.classList.remove('ring-4','ring-indigo-400'); if(event.dataTransfer.files.length>0 && event.dataTransfer.files[0].name.endsWith('.epub') && window.processSplitFile) window.processSplitFile(event.dataTransfer.files[0]);">
+                  ondrop="event.preventDefault(); this.classList.remove('ring-4','ring-indigo-400'); if(event.dataTransfer.files.length>0 && event.dataTransfer.files[0].name.toLowerCase().endsWith('.epub') && window.processSplitFile) window.processSplitFile(event.dataTransfer.files[0]);">
                   <div
                       class="mx-auto w-20 h-20 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform shadow-sm">
                       <svg id="upload-icon" xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24"

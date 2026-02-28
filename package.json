@@ -10,5 +10,9 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs"
+  "type": "commonjs",
+  "dependencies": {
+    "jsdom": "^28.1.0",
+    "jszip": "^3.10.1"
+  }
 }
