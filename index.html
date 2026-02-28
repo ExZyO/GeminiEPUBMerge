@@ -1721,41 +1721,34 @@
   
           <div id="view-merge"
               class="hidden bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors duration-300">
-              <div class="p-8 sm:p-12">
-                  <div class="max-w-3xl mx-auto">
-                      <div class="text-center mb-8">
-                          <div
-                              class="w-16 h-16 bg-fuchsia-100 dark:bg-fuchsia-900/40 text-fuchsia-600 dark:text-fuchsia-400 rounded-full flex items-center justify-center mx-auto mb-4">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24"
-                                  fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
-                                  stroke-linejoin="round">
-                                  <path d="m8 6 4-4 4 4" />
-                                  <path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22" />
-                                  <path d="m20 22-5-5" />
-                              </svg>
-                          </div>
-                          <h2 class="text-2xl font-bold text-slate-800 dark:text-white">Smart Novel Merger</h2>
-                          <p class="text-slate-500 dark:text-slate-400 mt-2">Combine parts together. This tool now maps
-                              and combines Tables of Contents correctly.</p>
-                          <div id="memory-warning"
-                              class="hidden mt-4 inline-block bg-amber-100 text-amber-800 px-4 py-2 rounded-lg text-sm font-medium border border-amber-200">
-                              ⚠️ Total size exceeds 300MB. The browser tab may crash if your device runs out of RAM.
-                          </div>
-                      </div>
+              <input type="file" id="merge-input" accept=".epub" multiple class="hidden" onchange="if(this.files.length>0 && window.handleMergeFiles) window.handleMergeFiles(Array.from(this.files))" />
+              <div id="merge-upload-box"
+                  class="p-12 sm:p-20 text-center hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors cursor-pointer group border-b-4 border-indigo-500"
+                  onclick="if(event.target.id !== 'merge-input') document.getElementById('merge-input').click()"
+                  ondragover="event.preventDefault(); this.classList.add('ring-4','ring-indigo-400');"
+                  ondragleave="this.classList.remove('ring-4','ring-indigo-400');"
+                  ondrop="event.preventDefault(); this.classList.remove('ring-4','ring-indigo-400'); if(event.dataTransfer.files.length>0 && window.handleMergeFiles) window.handleMergeFiles(Array.from(event.dataTransfer.files));">
+                  <div
+                      class="mx-auto w-20 h-20 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform shadow-sm">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24"
+                          fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                          stroke-linejoin="round">
+                          <path d="m8 6 4-4 4 4" />
+                          <path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22" />
+                          <path d="m20 22-5-5" />
+                      </svg>
+                  </div>
+                  <h3 class="text-2xl font-bold text-slate-800 dark:text-white mb-2">Select your .epub files to Merge</h3>
+                  <p class="text-slate-500 dark:text-slate-400 font-medium">Click here or drag and drop</p>
+                  <div id="memory-warning"
+                      class="hidden mt-4 inline-block bg-amber-100 text-amber-800 px-4 py-2 rounded-lg text-sm font-medium border border-amber-200">
+                      ⚠️ Total size exceeds 300MB. The browser tab may crash if your device runs out of RAM.
+                  </div>
+              </div>
   
-                      <input type="file" id="merge-input" accept=".epub" multiple class="hidden" onchange="if(this.files.length>0 && window.handleMergeFiles) window.handleMergeFiles(Array.from(this.files))" />
-                       <div id="merge-upload-box"
-                    onclick="if(event.target.tagName !== 'INPUT'){ event.stopPropagation(); document.getElementById('merge-input').click(); }"
-                    class="relative border-2 border-dashed border-indigo-200 dark:border-indigo-900/50 rounded-2xl p-8 sm:p-12 text-center hover:border-indigo-400 dark:hover:border-indigo-700 transition-all cursor-pointer group bg-white/50 dark:bg-slate-900/50 backdrop-blur-sm"
-                    ondragover="this.classList.add('border-indigo-500', 'bg-indigo-50/50', 'dark:bg-indigo-900/20'); event.preventDefault();"
-                    ondragleave="this.classList.remove('border-indigo-500', 'bg-indigo-50/50', 'dark:bg-indigo-900/20')"
-                    ondrop="this.classList.remove('border-indigo-500', 'bg-indigo-50/50', 'dark:bg-indigo-900/20'); event.preventDefault(); if(event.dataTransfer.files.length>0 && window.handleMergeFiles) window.handleMergeFiles(Array.from(event.dataTransfer.files))">
-                          <span class="text-lg font-bold text-indigo-600 dark:text-indigo-400">Click to Select Multiple
-                              EPUBs</span>
-                          <span class="block text-slate-400 text-sm mt-1">or drag and drop them here</span>
-                      </div>
-  
-                      <div id="merge-list-container" class="hidden space-y-4">
+              <div id="merge-list-container" class="hidden">
+                  <div class="p-8 sm:p-12 bg-slate-50 dark:bg-slate-800/50">
+                      <div class="max-w-3xl mx-auto space-y-4">
                           <div class="flex items-center justify-between">
                               <h3 class="font-bold text-slate-700 dark:text-slate-300">Files to Merge:</h3>
                               <div class="flex items-center gap-4">
