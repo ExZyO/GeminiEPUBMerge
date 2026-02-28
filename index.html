@@ -100,7 +100,7 @@
     // ═══════════════════════════════════════
     // CONSTANTS
     // ═══════════════════════════════════════
-    const VERSION = '4.3.4';
+    const VERSION = '4.3.6';
     const MAX_PAYLOAD = 60000;
     const PROMPT_OVERHEAD = 800;
     const MAX_HISTORY = 20;
@@ -409,6 +409,8 @@
       // --- Language State ---
       const [srcLang, setSrcLang] = useState('Auto-detect');
       const [tgtLang, setTgtLang] = useState('English');
+      const [customTgtLang, setCustomTgtLang] = useState('');
+      const [useCustomTgtLang, setUseCustomTgtLang] = useState(false);
 
       // --- Glossary State ---
       const [savedGlossaries, setSavedGlossaries] = useState([]);
@@ -552,7 +554,8 @@
 
       // --- Translation ---
       const getTranslateOpts = (signal) => {
-        const o = { provider, srcLang, tgtLang, glossary: terminology, instructions: customInstructions, signal, concurrency, prevContext: '' };
+        const actualTgtLang = useCustomTgtLang && customTgtLang.trim() ? customTgtLang.trim() : tgtLang;
+        const o = { provider, srcLang, tgtLang: actualTgtLang, glossary: terminology, instructions: customInstructions, signal, concurrency, prevContext: '' };
         if (provider === 'gemini') { const m = useCustomModel && customModel ? customModel : geminiModel; return { ...o, apiKey: geminiKey, model: m } }
         if (provider === 'deepl') return { ...o, apiKey: deeplKey }
         if (provider === 'libre') return { ...o, libreUrl: libreUrl, apiKey: libreKey }
@@ -639,7 +642,8 @@
             await SessionDB.delete('translationSessionText');
             setHasTextSession(false);
           }
-          addToHistory(srcLang, tgtLang, provider, inputText, assembledText || 'See output');
+          const actualTgtLang = useCustomTgtLang && customTgtLang.trim() ? customTgtLang.trim() : tgtLang;
+          addToHistory(srcLang, actualTgtLang, provider, inputText, assembledText || 'See output');
           toast('Translation complete!');
         } catch (e) {
           if (e.name !== 'AbortError') {
@@ -776,7 +780,8 @@
           }
 
           const final = allParts.join('\n\n\n').trim();
-          addToHistory(srcLang, tgtLang, provider, '[File upload]', final.substring(0, 2000));
+          const actualTgtLang = useCustomTgtLang && customTgtLang.trim() ? customTgtLang.trim() : tgtLang;
+          addToHistory(srcLang, actualTgtLang, provider, '[File upload]', final.substring(0, 2000));
           await SessionDB.delete('translationSessionEbook');
           setHasEbookSession(false);
           toast('Translation complete!');
@@ -1136,10 +1141,10 @@
                 h('label', { className: 'flex items-center gap-2 mt-2 text-xs text-gray-500 cursor-pointer' }, h('input', { type: 'checkbox', checked: useCustomModel, onChange: e => setUseCustomModel(e.target.checked), className: 'rounded' }), 'Use custom model name')
               ),
               provider === 'gemini' && h('label', { className: 'flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400 cursor-pointer' }, h('input', { type: 'checkbox', checked: enableStreaming, onChange: e => setEnableStreaming(e.target.checked), className: 'rounded accent-indigo-600' }), ic(Zap, 16), 'Streaming'),
-              h('div', { className: 'flex items-center gap-3 col-span-full' },
+              h('div', { className: 'flex items-center gap-2 sm:gap-3 col-span-full' },
                 h('label', { className: 'text-sm font-semibold whitespace-nowrap' }, `Parallel Requests: ${concurrency}`),
-                h('input', { type: 'range', min: 1, max: 10, value: concurrency, onChange: e => setConcurrency(parseInt(e.target.value)), className: 'flex-1 accent-indigo-600 h-2 cursor-pointer', disabled }),
-                h('span', { className: 'text-xs text-gray-400 whitespace-nowrap' }, concurrency === 1 ? 'Slower' : concurrency === 10 ? 'MAX SPEED' : 'Balanced')
+                h('input', { type: 'range', min: 1, max: 10, value: concurrency, onChange: e => setConcurrency(parseInt(e.target.value)), className: 'flex-1 accent-indigo-600 h-2 cursor-pointer min-w-10', disabled }),
+                h('span', { className: 'hidden sm:inline text-xs text-gray-400 whitespace-nowrap' }, concurrency === 1 ? 'Slower' : concurrency === 10 ? 'MAX SPEED' : 'Balanced')
               )
             ),
 
@@ -1151,7 +1156,9 @@
               ),
               h('div', null,
                 h('label', { className: 'block text-sm font-semibold mb-1' }, 'Target Language'),
-                h('select', { value: tgtLang, onChange: e => setTgtLang(e.target.value), disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' }, TARGET_LANGUAGES.map(l => h('option', { key: l, value: l }, l)))
+                !useCustomTgtLang ? h('select', { value: tgtLang, onChange: e => setTgtLang(e.target.value), disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' }, TARGET_LANGUAGES.map(l => h('option', { key: l, value: l }, l)))
+                  : h('input', { type: 'text', value: customTgtLang, onChange: e => setCustomTgtLang(e.target.value), placeholder: 'e.g. Pirate Speak, Klingon...', disabled, className: 'w-full p-2.5 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-indigo-500' }),
+                h('label', { className: 'flex items-center gap-2 mt-2 text-xs text-gray-500 cursor-pointer' }, h('input', { type: 'checkbox', checked: useCustomTgtLang, onChange: e => setUseCustomTgtLang(e.target.checked), className: 'rounded' }), 'Use custom language')
               )
             ),
 
