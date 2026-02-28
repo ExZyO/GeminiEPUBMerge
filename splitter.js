@@ -137,8 +137,9 @@ window.initSplitterJs = function () {
                 if (!item) return;
 
                 const textCheck = (item.href + idref).toLowerCase();
-                // Smarter front matter detection with configurable patterns
-                const isFrontMatter = /cover|title[-_]?page|copyright|dedication|acknowledgment|toc|nav[-_]?doc|preface|foreword|front[-_]?matter|half[-_]?title|series[-_]?page|about[-_]?author|epigraph|also[-_]?by/.test(textCheck);
+                // Narrower front matter detection: only duplicate the bare essentials (cover/title-page)
+                // AND only if they appear in the first 10 items of the book (to prevent duplicating late-book "titles")
+                const isFrontMatter = index < 10 && /cover|title[-_]?page/.test(textCheck);
 
                 if (isFrontMatter) {
                     frontMatter.push({ idref, item, index, originalName: item.href });
@@ -146,6 +147,10 @@ window.initSplitterJs = function () {
                     storyChapters.push({ idref, item, index, originalName: item.href, displayIndex: storyChapters.length + 1 });
                 }
             });
+
+            if (frontMatter.length > 0) {
+                logMsg(`Detected ${frontMatter.length} frontmatter items: [${frontMatter.map(f => f.originalName).join(', ')}]`);
+            }
 
             document.getElementById('chapter-count').textContent = `${storyChapters.length} story chapters detected`;
 
@@ -442,52 +447,17 @@ window.initSplitterJs = function () {
 
             logMsg(`Compressing & Zipping...`);
 
-            let blob;
-            if (window.location.protocol === 'file:') {
-                console.log("Local file execution detected. Falling back to main-thread zip generation.");
-                blob = await newZip.generateAsync(
-                    { type: "blob", compression: "DEFLATE", mimeType: "application/epub+zip" },
-                    function updateCallback(metadata) {
-                        const pWrapper = document.getElementById('split-progress-wrapper');
-                        const pBar = document.getElementById('split-progress-bar');
-                        const pPercent = document.getElementById('split-progress-percent');
-                        if (pWrapper) pWrapper.classList.remove('hidden');
-                        if (pBar) pBar.style.width = metadata.percent.toFixed(0) + '%';
-                        if (pPercent) pPercent.textContent = metadata.percent.toFixed(0) + '%';
-                    }
-                );
-            } else {
-                // Pass to Web Worker
-                const serializedFiles = {};
-                for (let path in newZip.files) {
-                    if (path === "mimetype" || newZip.files[path].dir) continue;
-                    serializedFiles[path] = await newZip.files[path].async("arraybuffer");
+            let blob = await newZip.generateAsync(
+                { type: "blob", compression: "DEFLATE", mimeType: "application/epub+zip" },
+                function updateCallback(metadata) {
+                    const pWrapper = document.getElementById('split-progress-wrapper');
+                    const pBar = document.getElementById('split-progress-bar');
+                    const pPercent = document.getElementById('split-progress-percent');
+                    if (pWrapper) pWrapper.classList.remove('hidden');
+                    if (pBar) pBar.style.width = metadata.percent.toFixed(0) + '%';
+                    if (pPercent) pPercent.textContent = metadata.percent.toFixed(0) + '%';
                 }
-
-                const worker = new Worker('zip-worker.js');
-                worker.postMessage({ id: 'split', filesConfig: serializedFiles });
-
-                blob = await new Promise((resolve, reject) => {
-                    worker.onmessage = (e) => {
-                        const data = e.data;
-                        if (data.type === 'progress') {
-                            const pWrapper = document.getElementById('split-progress-wrapper');
-                            const pBar = document.getElementById('split-progress-bar');
-                            const pPercent = document.getElementById('split-progress-percent');
-
-                            if (pWrapper) pWrapper.classList.remove('hidden');
-                            if (pBar) pBar.style.width = data.percent.toFixed(0) + '%';
-                            if (pPercent) pPercent.textContent = data.percent.toFixed(0) + '%';
-                        } else if (data.type === 'success') {
-                            resolve(data.blob);
-                            worker.terminate();
-                        } else if (data.type === 'error') {
-                            reject(new Error(data.error));
-                            worker.terminate();
-                        }
-                    };
-                });
-            }
+            );
 
             // Store for share button
             lastExportBlob = blob;
@@ -600,9 +570,11 @@ window.initSplitterJs = function () {
                 if (path === "mimetype" || splitMasterZip.files[path].dir) continue;
                 if (!path.endsWith('.html') && !path.endsWith('.xhtml')) {
                     const rawStats = splitMasterZip.files[path]._data; // uncompressed stats
-                    if (rawStats && rawStats.uncompressedSize) baselineSize += rawStats.uncompressedSize;
+                    // Assuming assets (images/fonts) compress less than text, apply a conservative factor
+                    if (rawStats && rawStats.uncompressedSize) baselineSize += (rawStats.uncompressedSize / 1.5);
                 }
             }
+            baselineSize = Math.max(baselineSize, 100 * 1024); // Minimum floor for metadata/structure
 
             let chunks = [];
             let currentChunk = [];
@@ -614,9 +586,10 @@ window.initSplitterJs = function () {
                 const fullPath = splitOpfDir + chap.originalName;
                 const fileObj = splitMasterZip.files[fullPath];
                 if (fileObj && fileObj._data && fileObj._data.uncompressedSize) {
-                    chapSize = fileObj._data.uncompressedSize;
+                    // Apply compression factor (text usually compresses ~2.5x to 4x)
+                    chapSize = fileObj._data.uncompressedSize / 2.5;
                 } else {
-                    chapSize = 50 * 1024; // fallback 50kb
+                    chapSize = 20 * 1024; // fallback 20kb
                 }
 
                 if (currentChunk.length > 0 && (currentSize + chapSize) > targetBytes) {

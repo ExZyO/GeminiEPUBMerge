@@ -549,52 +549,17 @@ window.initMergerJs = function () {
             const pBar = document.getElementById('merge-progress-bar');
             if (pBar) pBar.style.width = '0%';
 
-            let b;
-            if (window.location.protocol === 'file:') {
-                console.log("Local file execution detected. Falling back to main-thread zip generation.");
-                b = await newZip.generateAsync(
-                    { type: "blob", compression: compressionLevel, mimeType: "application/epub+zip" },
-                    function updateCallback(metadata) {
-                        const pWrapper = document.getElementById('merge-progress-wrapper');
-                        const pBar = document.getElementById('merge-progress-bar');
-                        const pPercent = document.getElementById('merge-progress-percent');
-                        if (pWrapper) pWrapper.classList.remove('hidden');
-                        if (pBar) pBar.style.width = metadata.percent.toFixed(0) + '%';
-                        if (pPercent) pPercent.textContent = metadata.percent.toFixed(0) + '%';
-                    }
-                );
-            } else {
-                // Pass to Web Worker for heavy lifting
-                const serializedFiles = {};
-                for (let path in newZip.files) {
-                    if (path === "mimetype" || newZip.files[path].dir) continue;
-                    serializedFiles[path] = await newZip.files[path].async("blob");
+            let b = await newZip.generateAsync(
+                { type: "blob", compression: compressionLevel, mimeType: "application/epub+zip" },
+                function updateCallback(metadata) {
+                    const pWrapper = document.getElementById('merge-progress-wrapper');
+                    const pBar = document.getElementById('merge-progress-bar');
+                    const pPercent = document.getElementById('merge-progress-percent');
+                    if (pWrapper) pWrapper.classList.remove('hidden');
+                    if (pBar) pBar.style.width = metadata.percent.toFixed(0) + '%';
+                    if (pPercent) pPercent.textContent = metadata.percent.toFixed(0) + '%';
                 }
-
-                const worker = new Worker('zip-worker.js');
-                worker.postMessage({ id: 'merge', filesConfig: serializedFiles, compression: compressionLevel });
-
-                b = await new Promise((resolve, reject) => {
-                    worker.onmessage = (e) => {
-                        const data = e.data;
-                        if (data.type === 'progress') {
-                            const pWrapper = document.getElementById('merge-progress-wrapper');
-                            const pBar = document.getElementById('merge-progress-bar');
-                            const pPercent = document.getElementById('merge-progress-percent');
-
-                            if (pWrapper) pWrapper.classList.remove('hidden');
-                            if (pBar) pBar.style.width = data.percent.toFixed(0) + '%';
-                            if (pPercent) pPercent.textContent = data.percent.toFixed(0) + '%';
-                        } else if (data.type === 'success') {
-                            resolve(data.blob);
-                            worker.terminate();
-                        } else if (data.type === 'error') {
-                            reject(new Error(data.error));
-                            worker.terminate();
-                        }
-                    };
-                });
-            }
+            );
 
             const a = document.createElement("a");
             a.href = URL.createObjectURL(b);
