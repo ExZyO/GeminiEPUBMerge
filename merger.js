@@ -196,9 +196,9 @@ window.initMergerJs = function () {
             // UI FIX: Using flex-nowrap and min-w-0 for the filename to ensure it wraps correctly without pushing buttons
             div.innerHTML = `
             <div class="flex items-start gap-2 min-w-0 flex-1 cursor-move select-none p-1">
-                <span class="text-xs font-bold text-fuchsia-500 mt-2">${idx + 1}.</span>
-                <div class="flex flex-col min-w-0 flex-1">
-                    <span class="font-medium text-xs leading-snug text-slate-500 dark:text-slate-400 break-words whitespace-normal pb-1">${f.name}</span>
+                <span class="text-xs font-bold text-fuchsia-500 mt-2 shrink-0">${idx + 1}.</span>
+                <div class="flex flex-col min-w-0 flex-1 w-full">
+                    <span class="font-medium text-xs leading-snug text-slate-500 dark:text-slate-400 break-all pr-1 pb-1">${f.name}</span>
                     <input type="text" class="book-label-input mt-1 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded px-2 py-1 text-xs font-bold text-slate-800 dark:text-white focus:outline-none focus:ring-1 focus:ring-fuchsia-500" value="${f.customLabel}" placeholder="e.g. Volume 1">
                 </div>
             </div>
