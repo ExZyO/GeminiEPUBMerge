@@ -100,7 +100,7 @@
     // ═══════════════════════════════════════
     // CONSTANTS
     // ═══════════════════════════════════════
-    const VERSION = '4.3.9';
+    const VERSION = '4.4.0';
     const MAX_PAYLOAD = 60000;
     const PROMPT_OVERHEAD = 800;
     const MAX_HISTORY = 20;
@@ -898,7 +898,7 @@
           let data;
           if (f.type === 'text/plain') data = { chapters: [{ title: f.name, text: await readFileAsText(f) }] };
           else if (f.type === 'application/pdf') data = { chapters: [{ title: f.name, text: await readPdf(f) }] };
-          else if (f.type === 'application/epub+zip' || f.name.endsWith('.epub')) data = await readEpub(f);
+          else if (f.type === 'application/epub+zip' || f.name.toLowerCase().endsWith('.epub')) data = await readEpub(f);
           else throw new Error('Unsupported file type. Use .txt, .pdf, or .epub');
 
           const cleaned = data.chapters.map(c => ({ ...c, text: c.isEpub ? c.text : cleanText(c.text) }));
@@ -1728,7 +1728,7 @@
   
           <div id="view-merge"
               class="hidden bg-white dark:bg-slate-800 rounded-3xl shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors duration-300">
-              <input type="file" id="merge-input" accept=".epub" multiple class="hidden" onchange="if(this.files.length>0 && window.handleMergeFiles) window.handleMergeFiles(Array.from(this.files))" />
+              <input type="file" id="merge-input" accept=".epub,application/epub+zip" multiple class="hidden" onchange="if(this.files.length>0 && window.handleMergeFiles) window.handleMergeFiles(Array.from(this.files))" />
               <div id="merge-upload-box"
                   class="p-12 sm:p-20 text-center hover:bg-slate-50 dark:hover:bg-slate-700/50 transition-colors cursor-pointer group border-b-4 border-indigo-500"
                   onclick="if(event.target.id !== 'merge-input') document.getElementById('merge-input').click()"

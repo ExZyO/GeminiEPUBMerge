@@ -58,7 +58,7 @@ window.initMergerJs = function () {
 
 
     window.handleMergeFiles = async function handleMergeFiles(files) {
-        const validFiles = files.filter(f => f.name.endsWith('.epub'));
+        const validFiles = files.filter(f => f.name.toLowerCase().endsWith('.epub'));
         if (validFiles.length === 0) return;
 
         // Duplicate detection & Filtering
@@ -79,7 +79,7 @@ window.initMergerJs = function () {
         if (isFirstAdd && mergeFiles.length > 0) {
             // Auto-prefill Title from filename if not set
             if (!mergeTitleInput.value) {
-                let baseName = mergeFiles[0].name.replace('.epub', '').replace(/\([^\)]+\)/g, '').trim();
+                let baseName = mergeFiles[0].name.replace(/\.[eE][pP][uU][bB]$/, '').replace(/\([^\)]+\)/g, '').trim();
                 mergeTitleInput.value = `${baseName} (Merged)`;
             }
 
