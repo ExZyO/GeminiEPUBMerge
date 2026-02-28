@@ -460,16 +460,15 @@
       useEffect(() => { localStorage.setItem('translationProvider', provider) }, [provider]);
       useEffect(() => { localStorage.setItem('concurrency', String(concurrency)) }, [concurrency]);
 
+      const checkSessions = async () => {
+        const ts = await SessionDB.get('translationSessionText');
+        const es = await SessionDB.get('translationSessionEbook');
+        setHasTextSession(!!ts);
+        setHasEbookSession(!!es);
+      };
+
       // Check for sessions on mount or when tab changes
-      useEffect(() => {
-        const checkSessions = async () => {
-          const ts = await SessionDB.get('translationSessionText');
-          const es = await SessionDB.get('translationSessionEbook');
-          setHasTextSession(!!ts);
-          setHasEbookSession(!!es);
-        };
-        checkSessions();
-      }, [activeTab, isTranslating]);
+      useEffect(() => { checkSessions(); }, [activeTab, isTranslating]);
 
       // Initialize Studio Vanilla Scripts
       useEffect(() => {
@@ -557,7 +556,15 @@
 
       // --- History ---
       const addToHistory = (src, tgt, prov, input, output) => { const entry = { id: genId(), ts: new Date().toISOString(), srcLang: src, tgtLang: tgt, provider: prov, inputPreview: input.substring(0, 200), outputPreview: output.substring(0, 200), fullInput: input, fullOutput: output }; const updated = [entry, ...history].slice(0, MAX_HISTORY); setHistory(updated); localStorage.setItem('translationHistory', JSON.stringify(updated)) };
-      const loadFromHistory = entry => { setInputText(entry.fullInput); setAssembledText(entry.fullOutput); setSrcLang(entry.srcLang || 'Auto-detect'); setTgtLang(entry.tgtLang || 'English'); setActiveTab('text'); toast('Loaded from history') };
+      const loadFromHistory = entry => {
+        setInputText(entry.fullInput);
+        setAssembledText(entry.fullOutput);
+        setSrcLang(entry.srcLang || 'Auto-detect');
+        setTgtLang(entry.tgtLang || 'English');
+        setActiveTab('text');
+        toast('Loaded from history');
+        setTimeout(checkSessions, 100); // UI Refresh
+      };
       const clearHistory = () => { confirmAction('Clear all history?', () => { setHistory([]); localStorage.setItem('translationHistory', '[]'); toast('History cleared.', 'info') }) };
       const deleteHistoryItem = id => { const u = history.filter(h => h.id !== id); setHistory(u); localStorage.setItem('translationHistory', JSON.stringify(u)) };
 
@@ -660,17 +667,22 @@
           addToHistory(srcLang, actualTgtLang, provider, inputText, assembledText || 'See output');
           toast('Translation complete!');
         } catch (e) {
-          if (e.name !== 'AbortError') {
-            setError(e.message); toast(e.message, 'error');
-          } else {
-            toast('Translation cancelled or paused. Session saved.', 'info')
+          if (e.name !== 'AbortError') { setError(e.message); toast(e.message, 'error') }
+          else toast('Cancelled. Session saved.', 'info')
+
+          // Ensure partial state is resumable even for text
+          if (provider === 'gemini' && enableStreaming) {
+            // streaming already saved per chunk, just update UI
+          } else if (assembledText) {
+            await SessionDB.set('translationSessionText', { originalText: inputText, result: assembledText, currentIndex: chunks.length, prevContext: '' });
           }
+
           if (assembledText) {
             const actualTgtLang = useCustomTgtLang && customTgtLang.trim() ? customTgtLang.trim() : tgtLang;
             addToHistory(srcLang, actualTgtLang, provider, '[Partial Text]', assembledText.substring(0, 2000));
           }
         }
-        finally { setIsTranslating(false); setProgress(0); setProgressLabel(''); abortRef.current = null }
+        finally { setIsTranslating(false); setProgress(0); setProgressLabel(''); abortRef.current = null; checkSessions() }
       };
 
       const handleTranslateEbook = async (chaptersToTranslate = null, isResume = false) => {
@@ -708,10 +720,12 @@
         const ctrl = new AbortController(); abortRef.current = ctrl;
         const opts = getTranslateOpts(ctrl.signal);
 
+        let i = startChapterIdx;
         try {
-          let totalChunks = 0; const chapterChunks = chapters.map(c => { const ch = splitChunks(c.text, terminology.length); totalChunks += ch.length; if (c.title.trim()) totalChunks++; return ch });
+          let totalChunks = 0;
+          const chapterChunks = chapters.map(c => { const ch = splitChunks(c.text, terminology.length); totalChunks += ch.length; if (c.title.trim()) totalChunks++; return ch });
 
-          for (let i = startChapterIdx; i < chapters.length; i++) {
+          for (i = startChapterIdx; i < chapters.length; i++) {
             const ch = chapters[i];
             let title = ch.title;
             if (title.trim()) {
@@ -849,13 +863,17 @@
           if (e.name !== 'AbortError') { setError(e.message); toast(e.message, 'error') }
           else toast('Cancelled. Session saved.', 'info')
 
+          // Robust Session Persistence: Save even on crash/limit
+          await SessionDB.set('translationSessionEbook', { allParts, newChapters, currentChapterIndex: i, doneChunks: done, prevContext });
+          setHasEbookSession(true);
+
           const final = allParts.join('\n\n\n').trim();
           if (final) {
             const actualTgtLang = useCustomTgtLang && customTgtLang.trim() ? customTgtLang.trim() : tgtLang;
             addToHistory(srcLang, actualTgtLang, provider, `[Partial File] ${chapters[0]?.title || ''}`, final.substring(0, 2000));
           }
         }
-        finally { setIsTranslating(false); setProgress(0); setProgressLabel(''); abortRef.current = null }
+        finally { setIsTranslating(false); setProgress(0); setProgressLabel(''); abortRef.current = null; checkSessions() }
       };
 
       const cancelTranslation = () => { if (abortRef.current) abortRef.current.abort() };
