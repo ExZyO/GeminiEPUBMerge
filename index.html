@@ -1296,6 +1296,40 @@
         return [];
       };
 
+      // Detect footnotes mixed into body text and format them separately
+      const formatContentForExport = (content) => {
+        const paragraphs = content.split(/\n\s*\n/).filter(p => p.trim());
+        const body = [];
+        const footnotes = [];
+        let inFootnotes = false;
+
+        for (let i = 0; i < paragraphs.length; i++) {
+          const p = paragraphs[i].trim();
+          // Detect standalone number (1, 2, 3...) that starts a footnote section
+          if (/^\d+$/.test(p) && i + 1 < paragraphs.length) {
+            inFootnotes = true;
+            // Merge the number with the next paragraph as a footnote
+            const noteText = paragraphs[i + 1]?.trim() || '';
+            footnotes.push(`[${p}] ${noteText}`);
+            i++; // skip next paragraph since we merged it
+          } else if (inFootnotes && !/^\d+$/.test(p)) {
+            // Continuation of footnote area but not a new number — append to last footnote
+            if (footnotes.length > 0) {
+              footnotes[footnotes.length - 1] += '\n' + p;
+            } else {
+              body.push(p);
+            }
+          } else {
+            body.push(p);
+          }
+        }
+
+        if (footnotes.length > 0) {
+          return { bodyText: body.join('\n\n'), footnoteText: footnotes.join('\n\n'), hasFootnotes: true };
+        }
+        return { bodyText: content, footnoteText: '', hasFootnotes: false };
+      };
+
       const handleDownloadPDF = () => {
         let targets = getDownloadTargets();
         if (!targets.length) return setError('No content to download.');
@@ -1305,20 +1339,25 @@
           const doc = new jsPDF();
           doc.setFont('Helvetica', 'normal');
 
+          // Helvetica only supports Latin-1. Replace unsupported chars with placeholder.
+          let hadCjk = false;
+          const sanitize = (str) => str.replace(/[^\x00-\u024F\u2000-\u206F\u2190-\u21FF\u2200-\u22FF]/g, m => {
+            hadCjk = true; return '(?)';
+          });
+
           doc.setProperties({ title: baseFileName || 'Translated Document' });
 
-          const lh = 10; // Increased line height
-          const m = 20; // Increased margin
+          const lh = 10;
+          const m = 20;
           const mw = doc.internal.pageSize.width - 2 * m;
-          let y = m + 10; // Start shifted down to avoid edge cut-off
+          let y = m + 10;
 
           targets.forEach((ch, i) => {
             if (i > 0) { doc.addPage(); y = m + 5; }
 
             const isMainSubtitle = (ch.title === 'Translated Document' || ch.title === 'Translated Text' || ch.title === baseFileName);
-            const cleanTitle = ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
+            const cleanTitle = sanitize(ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim());
 
-            // Only render title if it's NOT the redundant main document title
             if (cleanTitle && !isMainSubtitle && cleanTitle.length < 500) {
               doc.setFontSize(14);
               doc.setFont('Helvetica', 'bold');
@@ -1332,27 +1371,66 @@
               y += 5;
             }
 
-            // Explicitly reset style after title to prevent leak
             doc.setFontSize(12);
             doc.setFont('Helvetica', 'normal');
             doc.setTextColor(0, 0, 0);
 
-            let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').replace(/\[\/?SEG_\d+\]/g, '').trim();
+            let rawContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').replace(/\[\/?SEG_\d+\]/g, '').trim();
+            const { bodyText, footnoteText, hasFootnotes } = formatContentForExport(rawContent);
 
-            // Handle both \n\n and single \n for better paragraph preservation
-            const paragraphs = cleanContent.split(/\n\s*\n/).filter(p => p.trim());
-            paragraphs.forEach(p => {
+            // Render body paragraphs
+            const bodyParas = sanitize(bodyText).split(/\n\s*\n/).filter(p => p.trim());
+            bodyParas.forEach(p => {
               const lines = doc.splitTextToSize(p.trim(), mw);
               lines.forEach(l => {
                 if (y + lh > doc.internal.pageSize.height - m) { doc.addPage(); y = m + 5; }
                 doc.text(l, m, y);
                 y += lh;
               });
-              y += lh * 0.8; // Paragraph gap
+              y += lh * 0.8;
             });
+
+            // Render footnotes with separator
+            if (hasFootnotes) {
+              y += 5;
+              if (y + 30 > doc.internal.pageSize.height - m) { doc.addPage(); y = m + 5; }
+              doc.setDrawColor(180, 180, 180);
+              doc.line(m, y, m + mw * 0.4, y); // short separator line
+              y += 8;
+              doc.setFontSize(9);
+              doc.setFont('Helvetica', 'italic');
+              doc.setTextColor(100, 100, 100);
+              const fnParas = sanitize(footnoteText).split(/\n\s*\n/).filter(p => p.trim());
+              fnParas.forEach(p => {
+                const lines = doc.splitTextToSize(p.trim(), mw);
+                lines.forEach(l => {
+                  if (y + 8 > doc.internal.pageSize.height - m) { doc.addPage(); y = m + 5; }
+                  doc.text(l, m, y);
+                  y += 8;
+                });
+                y += 4;
+              });
+              // Reset style for next chapter
+              doc.setFontSize(12);
+              doc.setFont('Helvetica', 'normal');
+              doc.setTextColor(0, 0, 0);
+            }
           });
+
+          // Add note about CJK characters if any were replaced
+          if (hadCjk) {
+            doc.addPage(); y = m + 10;
+            doc.setFontSize(10);
+            doc.setFont('Helvetica', 'italic');
+            doc.setTextColor(128, 128, 128);
+            doc.text('Note: Some CJK/Unicode characters were replaced with (?) because', m, y);
+            y += 8;
+            doc.text('Helvetica font cannot render them. Use the EPUB export for full Unicode support.', m, y);
+          }
+
           doc.save(`translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.pdf`);
-          toast('PDF downloaded!');
+          if (hadCjk) toast('PDF downloaded! Some CJK characters shown as (?). Use EPUB for full Unicode.', 'info');
+          else toast('PDF downloaded!');
         } catch (e) { console.error('PDF error:', e); setError(`PDF error: ${e.message}`); toast(`PDF error: ${e.message}`, 'error') } finally { setDownloadingPdf(false) }
       };
 
@@ -1487,41 +1565,42 @@ ${navItems}
         if (!targets.length) return setError('No content to download.');
         setDownloadingDocx(true); setError('');
         try {
-          const { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak } = window.docx;
+          const { Document, Packer, Paragraph, TextRun, HeadingLevel, BorderStyle } = window.docx;
           const sections = targets.map((ch, i) => {
-            const isMainSubtitle = (ch.title === 'Translated Document' || ch.title === 'Translated Text' || ch.title === baseFileName);
             let cleanTitle = ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
-            let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').replace(/\[\/?SEG_\d+\]/g, '').trim();
+            let rawContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').replace(/\[\/?SEG_\d+\]/g, '').trim();
+            const isMainSubtitle = (cleanTitle === 'Translated Document' || cleanTitle === 'Translated Text' || cleanTitle === baseFileName);
+            const { bodyText, footnoteText, hasFootnotes } = formatContentForExport(rawContent);
 
-            const docxChildren = [];
-            if (cleanTitle && !isMainSubtitle && cleanTitle.length < 500) {
-              docxChildren.push(new Paragraph({
-                children: [new TextRun({ text: cleanTitle, bold: true, size: 28, color: "000000" })],
-                spacing: { before: 400, after: 300 }
+            const children = [];
+            // Title
+            if (cleanTitle.trim() && !isMainSubtitle && cleanTitle.length < 500) {
+              children.push(new Paragraph({ text: cleanTitle, heading: HeadingLevel.HEADING_1, spacing: { after: 200 } }));
+            }
+            // Body paragraphs
+            bodyText.split(/\n\s*\n/).filter(p => p.trim()).forEach(p => {
+              children.push(new Paragraph({ children: [new TextRun(p.replace(/\n/g, ' ').trim())], spacing: { after: 120 } }));
+            });
+            // Footnotes with separator
+            if (hasFootnotes) {
+              children.push(new Paragraph({
+                border: { top: { style: BorderStyle?.SINGLE || 'single', size: 1, color: 'AAAAAA' } },
+                spacing: { before: 400, after: 100 }
               }));
+              footnoteText.split(/\n\s*\n/).filter(p => p.trim()).forEach(p => {
+                children.push(new Paragraph({
+                  children: [new TextRun({ text: p.replace(/\n/g, ' ').trim(), italics: true, size: 18, color: '888888' })],
+                  spacing: { after: 80 }
+                }));
+              });
             }
 
-            // Split into paragraphs properly
-            const paragraphs = cleanContent.split(/\n\s*\n/).filter(p => p.trim());
-            paragraphs.forEach(paraText => {
-              // Replace internal single newlines with spaces for natural docx wrapping
-              const normalized = paraText.replace(/\n/g, ' ').trim();
-              docxChildren.push(new Paragraph({
-                children: [new TextRun(normalized)],
-                spacing: { after: 200, line: 360 } // 1.5 line spacing approx
-              }));
-            });
-
             return {
-              properties: i > 0 ? { type: (window.docx.SectionType?.NEXT_PAGE || 'nextPage') } : {},
-              children: docxChildren
+              properties: i > 0 ? { page: { pageBreaks: { before: true } } } : {},
+              children
             };
           });
-          const doc = new Document({
-            title: baseFileName || 'Translated Document',
-            creator: 'Gemini Translator',
-            sections
-          });
+          const doc = new Document({ sections });
           const blob = await Packer.toBlob(doc);
           const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.docx`; a.click(); URL.revokeObjectURL(a.href); toast('DOCX downloaded!')
         } catch (e) { console.error('DOCX error:', e); setError(`DOCX error: ${e.message}`); toast(`DOCX error: ${e.message}`, 'error') } finally { setDownloadingDocx(false) }
