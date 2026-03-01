@@ -371,9 +371,10 @@
       p += `RULES:\n`;
       p += `1. Keep the exact [SEG_N] and [/SEG_N] markers in your response.\n`;
       p += `2. Translate ONLY the text between markers.\n`;
-      p += `3. Do NOT add commentary, explanations, or notes.\n`;
+      p += `3. Do NOT add commentary, explanations, notes, or numbering.\n`;
       p += `4. Each translated segment should be similar length to the original.\n`;
-      p += `5. Output format example:\n[SEG_0]translated text here[/SEG_0]\n[SEG_1]translated text here[/SEG_1]\n\n`;
+      p += `5. Do NOT add leading numbers like "1.", "2)" etc.\n`;
+      p += `6. Output format example:\n[SEG_0]translated text here[/SEG_0]\n[SEG_1]translated text here[/SEG_1]\n\n`;
       if (glossary.trim()) p += `Terminology: ${glossary.trim()}\n\n`;
       if (instructions.trim()) p += `Style: ${instructions.trim()}\n\n`;
       segments.forEach((seg, i) => {
@@ -391,7 +392,8 @@
         const si = response.indexOf(startTag);
         const ei = response.indexOf(endTag);
         if (si !== -1 && ei !== -1 && ei > si) {
-          results[i] = response.substring(si + startTag.length, ei).trim();
+          results[i] = response.substring(si + startTag.length, ei).trim()
+            .replace(/^\d+[.)\-:]\s*/, ''); // Strip leading numbering like "1.", "2)" the AI sometimes adds
         }
       }
       return results;
@@ -1335,7 +1337,7 @@
             doc.setFont('Helvetica', 'normal');
             doc.setTextColor(0, 0, 0);
 
-            let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
+            let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').replace(/\[\/?SEG_\d+\]/g, '').trim();
 
             // Handle both \n\n and single \n for better paragraph preservation
             const paragraphs = cleanContent.split(/\n\s*\n/).filter(p => p.trim());
@@ -1351,7 +1353,7 @@
           });
           doc.save(`translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.pdf`);
           toast('PDF downloaded!');
-        } catch (e) { setError(`PDF error: ${e.message}`) } finally { setDownloadingPdf(false) }
+        } catch (e) { console.error('PDF error:', e); setError(`PDF error: ${e.message}`); toast(`PDF error: ${e.message}`, 'error') } finally { setDownloadingPdf(false) }
       };
 
       const handleDownloadEPUB = async () => {
@@ -1489,7 +1491,7 @@ ${navItems}
           const sections = targets.map((ch, i) => {
             const isMainSubtitle = (ch.title === 'Translated Document' || ch.title === 'Translated Text' || ch.title === baseFileName);
             let cleanTitle = ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
-            let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
+            let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').replace(/\[\/?SEG_\d+\]/g, '').trim();
 
             const docxChildren = [];
             if (cleanTitle && !isMainSubtitle && cleanTitle.length < 500) {
@@ -1511,7 +1513,7 @@ ${navItems}
             });
 
             return {
-              properties: i > 0 ? { page: { breakType: window.docx.BreakType.PAGE } } : {},
+              properties: i > 0 ? { type: (window.docx.SectionType?.NEXT_PAGE || 'nextPage') } : {},
               children: docxChildren
             };
           });
@@ -1522,7 +1524,7 @@ ${navItems}
           });
           const blob = await Packer.toBlob(doc);
           const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.docx`; a.click(); URL.revokeObjectURL(a.href); toast('DOCX downloaded!')
-        } catch (e) { setError(`DOCX error: ${e.message}`) } finally { setDownloadingDocx(false) }
+        } catch (e) { console.error('DOCX error:', e); setError(`DOCX error: ${e.message}`); toast(`DOCX error: ${e.message}`, 'error') } finally { setDownloadingDocx(false) }
       };
 
       // --- Studio Logic State ---
