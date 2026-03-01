@@ -100,7 +100,7 @@
     // ═══════════════════════════════════════
     // CONSTANTS
     // ═══════════════════════════════════════
-    const VERSION = '4.6.0';
+    const VERSION = '4.7.0';
     const MAX_PAYLOAD = 60000;
     const PROMPT_OVERHEAD = 800;
     const MAX_HISTORY = 20;
@@ -120,17 +120,25 @@
           const r = await fetch(url, opts);
           // Retry on rate limits (429) or server errors (500+)
           if ((r.status === 429 || r.status >= 500) && i < retries - 1) {
+            if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
             const delay = Math.pow(2, i) * 1000 + (Math.random() * 1000);
-            console.warn(`[Retry ${i + 1}/${retries}] Status ${r.status}. Waiting ${Math.round(delay)}ms...`);
-            await new Promise(t => setTimeout(t, delay));
+            console.warn(`[Retry ${i + 1}/${retries}] Status ${r.status}. Waiting ${Math.round(delay)} samples...`);
+            await new Promise((res, rej) => {
+              const t = setTimeout(res, delay);
+              opts.signal?.addEventListener('abort', () => { clearTimeout(t); rej(new DOMException('Aborted', 'AbortError')) }, { once: true });
+            });
             continue;
           }
           return r;
         } catch (e) {
           if (e.name === 'AbortError' || i === retries - 1) throw e;
+          if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
           const delay = Math.pow(2, i) * 1000 + (Math.random() * 1000);
           console.warn(`[Retry ${i + 1}/${retries}] Network error: ${e.message}. Waiting ${Math.round(delay)}ms...`);
-          await new Promise(t => setTimeout(t, delay));
+          await new Promise((res, rej) => {
+            const t = setTimeout(res, delay);
+            opts.signal?.addEventListener('abort', () => { clearTimeout(t); rej(new DOMException('Aborted', 'AbortError')) }, { once: true });
+          });
         }
       }
     };
@@ -303,35 +311,37 @@
       const j = await r.json(); return j.translatedText || '';
     };
 
-    const translateOpenAI = async (text, { apiKey, srcLang, tgtLang, glossary, instructions, prevContext }) => {
+    const translateOpenAI = async (text, { apiKey, model, srcLang, tgtLang, glossary, instructions, prevContext, signal }) => {
       if (!apiKey) throw new Error('OpenAI API key required.');
       const prompt = buildPrompt(text, srcLang, tgtLang, glossary, instructions, prevContext);
       const r = await fetchRetry('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify({
-          model: 'gpt-4o-mini',
+          model: model || 'gpt-4o-mini',
           messages: [{ role: 'system', content: 'You are a professional literary translator.' }, { role: 'user', content: prompt }],
           temperature: 0.3
-        })
+        }),
+        signal
       });
       if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`OpenAI HTTP ${r.status}: ${b.substring(0, 200)}`) }
       const d = await r.json(); return d.choices[0].message.content.trim();
     };
 
-    const translateClaude = async (text, { apiKey, srcLang, tgtLang, glossary, instructions, prevContext }) => {
+    const translateClaude = async (text, { apiKey, model, srcLang, tgtLang, glossary, instructions, prevContext, signal }) => {
       if (!apiKey) throw new Error('Claude API key required.');
       const prompt = buildPrompt(text, srcLang, tgtLang, glossary, instructions, prevContext);
       const r = await fetchRetry('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
         body: JSON.stringify({
-          model: 'claude-3-5-haiku-latest',
+          model: model || 'claude-3-5-haiku-20241022',
           max_tokens: 4000,
           system: 'You are a professional literary translator.',
           messages: [{ role: 'user', content: prompt }],
           temperature: 0.3
-        })
+        }),
+        signal
       });
       if (!r.ok) { const b = await r.text().catch(() => ''); throw new Error(`Anthropic HTTP ${r.status}: ${b.substring(0, 200)}`) }
       const d = await r.json(); return d.content[0].text.trim();
@@ -346,6 +356,45 @@
         case 'claude': return translateClaude(text, opts);
         default: return translateGemini(text, opts);
       }
+    };
+
+    // ═══════════════════════════════════════
+    // BATCHED NODE TRANSLATION (15-20x efficiency)
+    // ═══════════════════════════════════════
+    const BATCH_MARKER_START = '[SEG_';
+    const BATCH_MARKER_END = ']';
+    const NODE_BATCH_SIZE = 15; // nodes per API call
+    const NODE_BATCH_MAX_CHARS = 40000; // max chars per batch
+
+    const buildBatchPrompt = (segments, srcLang, tgtLang, glossary, instructions) => {
+      let p = `Translate each segment below${srcLang && srcLang !== 'Auto-detect' ? ' from ' + srcLang : ''} into ${tgtLang}.\n`;
+      p += `RULES:\n`;
+      p += `1. Keep the exact [SEG_N] and [/SEG_N] markers in your response.\n`;
+      p += `2. Translate ONLY the text between markers.\n`;
+      p += `3. Do NOT add commentary, explanations, or notes.\n`;
+      p += `4. Each translated segment should be similar length to the original.\n`;
+      p += `5. Output format example:\n[SEG_0]translated text here[/SEG_0]\n[SEG_1]translated text here[/SEG_1]\n\n`;
+      if (glossary.trim()) p += `Terminology: ${glossary.trim()}\n\n`;
+      if (instructions.trim()) p += `Style: ${instructions.trim()}\n\n`;
+      segments.forEach((seg, i) => {
+        p += `[SEG_${i}]${seg}[/SEG_${i}]\n`;
+      });
+      return p;
+    };
+
+    const parseBatchResponse = (response, count) => {
+      const results = new Array(count).fill(null);
+      for (let i = 0; i < count; i++) {
+        // Try multiple parsing strategies
+        const startTag = `[SEG_${i}]`;
+        const endTag = `[/SEG_${i}]`;
+        const si = response.indexOf(startTag);
+        const ei = response.indexOf(endTag);
+        if (si !== -1 && ei !== -1 && ei > si) {
+          results[i] = response.substring(si + startTag.length, ei).trim();
+        }
+      }
+      return results;
     };
 
     const fetchGeminiModels = async (apiKey) => {
@@ -386,17 +435,20 @@
 
       // --- Provider State ---
       const [provider, setProvider] = useState(() => localStorage.getItem('translationProvider') || 'gemini');
-      const [geminiKey, setGeminiKey] = useState(() => localStorage.getItem('geminiApiKey') || '');
-      const [geminiKeyInput, setGeminiKeyInput] = useState(() => localStorage.getItem('geminiApiKey') || '');
-      const [deeplKey, setDeeplKey] = useState(() => localStorage.getItem('deeplApiKey') || '');
-      const [deeplKeyInput, setDeeplKeyInput] = useState(() => localStorage.getItem('deeplApiKey') || '');
-      const [openaiKey, setOpenaiKey] = useState(() => localStorage.getItem('openaiApiKey') || '');
-      const [openaiKeyInput, setOpenaiKeyInput] = useState(() => localStorage.getItem('openaiApiKey') || '');
-      const [claudeKey, setClaudeKey] = useState(() => localStorage.getItem('claudeApiKey') || '');
-      const [claudeKeyInput, setClaudeKeyInput] = useState(() => localStorage.getItem('claudeApiKey') || '');
+
+      // Multi-Key State
+      const [apiKeysByProvider, setApiKeysByProvider] = useState(() => {
+        const saved = localStorage.getItem('apiKeysByProvider');
+        if (saved) return JSON.parse(saved);
+        return { gemini: [], openai: [], claude: [], deepl: [], libre: [] };
+      });
+      const [activeKeyIds, setActiveKeyIds] = useState(() => {
+        const saved = localStorage.getItem('activeKeyIds');
+        if (saved) return JSON.parse(saved);
+        return { gemini: null, openai: null, claude: null, deepl: null, libre: null };
+      });
+
       const [libreUrl, setLibreUrl] = useState(() => localStorage.getItem('libreUrl') || 'https://libretranslate.com');
-      const [libreKey, setLibreKey] = useState(() => localStorage.getItem('libreApiKey') || '');
-      const [libreKeyInput, setLibreKeyInput] = useState(() => localStorage.getItem('libreApiKey') || '');
       const [geminiModel, setGeminiModel] = useState(() => localStorage.getItem('geminiModel') || 'gemini-2.5-flash');
       const [availableModels, setAvailableModels] = useState([]);
       const [customModel, setCustomModel] = useState('');
@@ -407,11 +459,6 @@
       const [claudeModel, setClaudeModel] = useState(() => localStorage.getItem('claudeModel') || 'claude-3-5-haiku-20241022');
       const [customClaudeModel, setCustomClaudeModel] = useState('');
       const [useCustomClaudeModel, setUseCustomClaudeModel] = useState(false);
-      const [showGeminiKey, setShowGeminiKey] = useState(false);
-      const [showDeeplKey, setShowDeeplKey] = useState(false);
-      const [showOpenaiKey, setShowOpenaiKey] = useState(false);
-      const [showClaudeKey, setShowClaudeKey] = useState(false);
-      const [showLibreKey, setShowLibreKey] = useState(false);
       const [enableStreaming, setEnableStreaming] = useState(() => localStorage.getItem('enableStreaming') === 'true');
       const [concurrency, setConcurrency] = useState(() => parseInt(localStorage.getItem('concurrency')) || DEFAULT_CONCURRENCY);
 
@@ -445,6 +492,7 @@
       const [downloadingDocx, setDownloadingDocx] = useState(false);
       const [isDragOver, setIsDragOver] = useState(false);
       const [baseFileName, setBaseFileName] = useState('');
+      const [showKeys, setShowKeys] = useState({}); // { keyId: boolean }
 
       // --- Refs ---
       const fileInputRef = useRef(null);
@@ -459,6 +507,39 @@
       useEffect(() => { localStorage.setItem('enableStreaming', String(enableStreaming)) }, [enableStreaming]);
       useEffect(() => { localStorage.setItem('translationProvider', provider) }, [provider]);
       useEffect(() => { localStorage.setItem('concurrency', String(concurrency)) }, [concurrency]);
+      useEffect(() => { localStorage.setItem('apiKeysByProvider', JSON.stringify(apiKeysByProvider)) }, [apiKeysByProvider]);
+      useEffect(() => { localStorage.setItem('activeKeyIds', JSON.stringify(activeKeyIds)) }, [activeKeyIds]);
+
+      // Migration Effect
+      useEffect(() => {
+        const oldKeys = {
+          gemini: localStorage.getItem('geminiApiKey'),
+          openai: localStorage.getItem('openaiApiKey'),
+          claude: localStorage.getItem('claudeApiKey'),
+          deepl: localStorage.getItem('deeplApiKey'),
+          libre: localStorage.getItem('libreApiKey')
+        };
+
+        let migrated = false;
+        const newKeys = { ...apiKeysByProvider };
+        const newActives = { ...activeKeyIds };
+
+        Object.entries(oldKeys).forEach(([prov, key]) => {
+          if (key && (!newKeys[prov] || newKeys[prov].length === 0)) {
+            const id = genId();
+            newKeys[prov] = [{ id, name: 'Default Key', key: key.trim() }];
+            newActives[prov] = id;
+            localStorage.removeItem(`${prov}ApiKey`);
+            migrated = true;
+          }
+        });
+
+        if (migrated) {
+          setApiKeysByProvider(newKeys);
+          setActiveKeyIds(newActives);
+          toast('Migrated existing API keys to new multi-key system.', 'info');
+        }
+      }, []);
 
       const checkSessions = async () => {
         const ts = await SessionDB.get('translationSessionText');
@@ -518,27 +599,58 @@
         if (typeof window.pdfjsLib !== 'undefined') window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
       }, []);
 
-      useEffect(() => { if (geminiKey) fetchGeminiModels(geminiKey).then(m => { setAvailableModels(m); if (m.length && !m.find(x => x.id === geminiModel) && !useCustomModel && m[0]) setGeminiModel(m[0].id) }).catch(() => { }) }, [geminiKey]);
+      useEffect(() => {
+        const activeKey = apiKeysByProvider.gemini?.find(k => k.id === activeKeyIds.gemini)?.key;
+        if (activeKey) {
+          fetchGeminiModels(activeKey).then(m => {
+            setAvailableModels(m);
+            if (m.length && !m.find(x => x.id === geminiModel) && !useCustomModel && m[0]) setGeminiModel(m[0].id)
+          }).catch(() => { });
+        }
+      }, [apiKeysByProvider.gemini, activeKeyIds.gemini]);
 
       // Keyboard shortcuts
       useEffect(() => {
         const handler = e => { if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); if (!isTranslating) handleTranslateText() } if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'C') { e.preventDefault(); if (assembledText) copyText(assembledText).then(() => toast('Copied!')).catch(() => { }) } };
         window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler);
-      });
+      }, [isTranslating, assembledText]);
 
-      // --- API Key Handlers ---
-      const saveGeminiKey = () => { if (!geminiKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('geminiApiKey', geminiKeyInput.trim()); setGeminiKey(geminiKeyInput.trim()); toast('Gemini API key saved!'); setError('') };
-      const clearGeminiKey = () => { localStorage.removeItem('geminiApiKey'); setGeminiKey(''); setGeminiKeyInput(''); setAvailableModels([]); toast('Gemini API key cleared.', 'info') };
-      const saveDeeplKey = () => { if (!deeplKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('deeplApiKey', deeplKeyInput.trim()); setDeeplKey(deeplKeyInput.trim()); toast('DeepL API key saved!'); setError('') };
-      const clearDeeplKey = () => { localStorage.removeItem('deeplApiKey'); setDeeplKey(''); setDeeplKeyInput(''); toast('DeepL API key cleared.', 'info') };
-      const saveOpenaiKey = () => { if (!openaiKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('openaiApiKey', openaiKeyInput.trim()); setOpenaiKey(openaiKeyInput.trim()); toast('OpenAI API key saved!'); setError('') };
-      const clearOpenaiKey = () => { localStorage.removeItem('openaiApiKey'); setOpenaiKey(''); setOpenaiKeyInput(''); toast('OpenAI API key cleared.', 'info') };
-      const saveClaudeKey = () => { if (!claudeKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('claudeApiKey', claudeKeyInput.trim()); setClaudeKey(claudeKeyInput.trim()); toast('Claude API key saved!'); setError('') };
-      const clearClaudeKey = () => { localStorage.removeItem('claudeApiKey'); setClaudeKey(''); setClaudeKeyInput(''); toast('Claude API key cleared.', 'info') };
+      // --- API Key Handlers (Multi-Key) ---
+      const addApiKey = (prov) => {
+        const id = genId();
+        const newKey = { id, name: `New ${prov.toUpperCase()} Key`, key: '' };
+        setApiKeysByProvider(prev => ({ ...prev, [prov]: [...(prev[prov] || []), newKey] }));
+        if (!activeKeyIds[prov]) setActiveKeyIds(prev => ({ ...prev, [prov]: id }));
+        toast(`Added new ${prov.toUpperCase()} key profile.`);
+      };
+
+      const deleteApiKey = (prov, id) => {
+        confirmAction(`Delete this ${prov.toUpperCase()} key profile?`, () => {
+          setApiKeysByProvider(prev => ({ ...prev, [prov]: prev[prov].filter(k => k.id !== id) }));
+          if (activeKeyIds[prov] === id) {
+            setActiveKeyIds(prev => {
+              const remaining = apiKeysByProvider[prov].filter(k => k.id !== id);
+              return { ...prev, [prov]: remaining.length > 0 ? remaining[0].id : null };
+            });
+          }
+          toast('Key profile deleted.', 'info');
+        });
+      };
+
+      const updateApiKey = (prov, id, field, value) => {
+        setApiKeysByProvider(prev => ({
+          ...prev,
+          [prov]: prev[prov].map(k => k.id === id ? { ...k, [field]: value } : k)
+        }));
+      };
+
+      const setActiveKey = (prov, id) => {
+        setActiveKeyIds(prev => ({ ...prev, [prov]: id }));
+        toast(`Active ${prov.toUpperCase()} key updated.`);
+      };
+
       const saveLibreUrl = () => { localStorage.setItem('libreUrl', libreUrl); toast('LibreTranslate URL saved!') };
       const clearLibreUrl = () => { setLibreUrl('https://libretranslate.com'); localStorage.setItem('libreUrl', 'https://libretranslate.com'); toast('LibreTranslate URL reset.', 'info') };
-      const saveLibreKey = () => { if (!libreKeyInput.trim()) return setError('API key cannot be empty.'); localStorage.setItem('libreApiKey', libreKeyInput.trim()); setLibreKey(libreKeyInput.trim()); toast('LibreTranslate API key saved!'); setError('') };
-      const clearLibreKey = () => { localStorage.removeItem('libreApiKey'); setLibreKey(''); setLibreKeyInput(''); toast('LibreTranslate API key cleared.', 'info') };
 
       // --- Glossary Handlers ---
       const handleSaveGlossary = () => { if (!newGlossaryName.trim()) return setError('Enter a glossary name.'); if (!terminology.trim()) return setError('Glossary content is empty.'); const existing = savedGlossaries.findIndex(g => g.name === newGlossaryName.trim()); if (existing > -1) { confirmAction(`Overwrite "${newGlossaryName.trim()}"?`, () => { const u = [...savedGlossaries]; u[existing] = { name: newGlossaryName.trim(), content: terminology }; setSavedGlossaries(u); localStorage.setItem('savedGlossaries', JSON.stringify(u)); setNewGlossaryName(''); setActiveGlossaryId(newGlossaryName.trim()); toast('Glossary updated!') }) } else { const u = [...savedGlossaries, { name: newGlossaryName.trim(), content: terminology }]; setSavedGlossaries(u); localStorage.setItem('savedGlossaries', JSON.stringify(u)); setNewGlossaryName(''); setActiveGlossaryId(newGlossaryName.trim()); setError(''); toast('Glossary saved!') } };
@@ -571,13 +683,42 @@
       // --- Translation ---
       const getTranslateOpts = (signal) => {
         const actualTgtLang = useCustomTgtLang && customTgtLang.trim() ? customTgtLang.trim() : tgtLang;
-        const o = { provider, srcLang, tgtLang: actualTgtLang, glossary: terminology, instructions: customInstructions, signal, concurrency, prevContext: '' };
-        if (provider === 'gemini') { const m = useCustomModel && customModel ? customModel : geminiModel; return { ...o, apiKey: geminiKey, model: m } }
-        if (provider === 'deepl') return { ...o, apiKey: deeplKey }
-        if (provider === 'libre') return { ...o, libreUrl: libreUrl, apiKey: libreKey }
-        if (provider === 'openai') { const m = useCustomOpenaiModel && customOpenaiModel ? customOpenaiModel : openaiModel; return { ...o, apiKey: openaiKey, model: m } }
-        if (provider === 'claude') { const m = useCustomClaudeModel && customClaudeModel ? customClaudeModel : claudeModel; return { ...o, apiKey: claudeKey, model: m } }
+        const activeKey = apiKeysByProvider[provider]?.find(k => k.id === activeKeyIds[provider])?.key || '';
+        const o = { provider, srcLang, tgtLang: actualTgtLang, glossary: terminology, instructions: customInstructions, signal, concurrency, prevContext: '', apiKey: activeKey };
+
+        if (provider === 'gemini') { const m = useCustomModel && customModel ? customModel : geminiModel; return { ...o, model: m } }
+        if (provider === 'libre') return { ...o, libreUrl: libreUrl }
+        if (provider === 'openai') { const m = useCustomOpenaiModel && customOpenaiModel ? customOpenaiModel : openaiModel; return { ...o, model: m } }
+        if (provider === 'claude') { const m = useCustomClaudeModel && customClaudeModel ? customClaudeModel : claudeModel; return { ...o, model: m } }
         return o;
+      };
+
+      // Auto Key Rotation: cycle to next key when rate limited
+      const rotateApiKey = () => {
+        const keys = apiKeysByProvider[provider] || [];
+        if (keys.length <= 1) return false; // No other keys to rotate to
+        const currentIdx = keys.findIndex(k => k.id === activeKeyIds[provider]);
+        const nextIdx = (currentIdx + 1) % keys.length;
+        const nextKey = keys[nextIdx];
+        setActiveKeyIds(prev => ({ ...prev, [provider]: nextKey.id }));
+        toast(`Key exhausted → rotated to "${nextKey.name}"`, 'info');
+        return nextKey.key;
+      };
+
+      // Translate with auto-retry on rate limit + key rotation
+      const translateWithRotation = async (text, opts) => {
+        try {
+          return await translateChunk(text, opts);
+        } catch (e) {
+          if (e.message?.includes('429') || e.message?.toLowerCase().includes('rate') || e.message?.toLowerCase().includes('quota')) {
+            const newKey = rotateApiKey();
+            if (newKey) {
+              toast('Rate limited — trying next API key...', 'info');
+              return await translateChunk(text, { ...opts, apiKey: newKey });
+            }
+          }
+          throw e;
+        }
       };
 
       const handleTranslateText = async (isResume = false) => {
@@ -646,11 +787,16 @@
             // But we can slice from the original text (or just not use prevContext for parallel).
             // We follow the report and use the context-aware pipeline, which strongly implies sequential for maximum quality,
             // but we'll supply a rough prevContext if possible.
+            let currentLiveChunks = new Array(chunks.length - startIndex).fill('');
             const results = await batchConcurrent(chunks.slice(startIndex), async (chunk, idx) => {
               const translated = await translateChunk(chunk, opts);
               if (translated?.error) throw new Error(translated.error);
               completed++; setProgress(Math.floor((completed / chunks.length) * 100));
               setProgressLabel(`Completed ${completed}/${chunks.length} chunks`);
+
+              currentLiveChunks[idx] = translated;
+              const currentResult = initialResult + currentLiveChunks.filter(Boolean).join('');
+              setAssembledText(currentResult);
               return translated;
             }, concurrency, opts.signal);
 
@@ -674,7 +820,8 @@
           if (provider === 'gemini' && enableStreaming) {
             // streaming already saved per chunk, just update UI
           } else if (assembledText) {
-            await SessionDB.set('translationSessionText', { originalText: inputText, result: assembledText, currentIndex: chunks.length, prevContext: '' });
+            const lastCompleted = startIndex; // Use startIndex as fallback since completed may not be in scope
+            await SessionDB.set('translationSessionText', { originalText: inputText, result: assembledText, currentIndex: lastCompleted, prevContext: '' });
           }
 
           if (assembledText) {
@@ -686,8 +833,7 @@
       };
 
       const handleTranslateEbook = async (chaptersToTranslate = null, isResume = false) => {
-        let chapters = chaptersToTranslate || window.currentEbookChapters;
-        if (!chapters) return setError('No document in memory to resume. Please re-upload the file.');
+        let chapters = (chaptersToTranslate && chaptersToTranslate.length > 0) ? chaptersToTranslate : window.currentEbookChapters;
 
         setIsTranslating(true); setProgress(0); setError('');
 
@@ -701,6 +847,16 @@
           try {
             const session = await SessionDB.get('translationSessionEbook');
             if (session) {
+              if ((!chapters || !chapters.length) && session.originalChapters) {
+                chapters = session.originalChapters;
+                window.currentEbookChapters = chapters;
+              }
+              if (session.baseFileName) setBaseFileName(session.baseFileName);
+
+              if (session.originalChapters?.some(c => c.chapterPath) && !window.currentEpubZip) {
+                toast('Note: Structural preservation lost after refresh. Resuming as plain text.', 'info');
+              }
+
               allParts = session.allParts || [];
               newChapters = session.newChapters || [];
               startChapterIdx = session.currentChapterIndex || 0;
@@ -717,6 +873,11 @@
           await SessionDB.delete('translationSessionEbook');
         }
 
+        if (!chapters || !chapters.length) {
+          setIsTranslating(false);
+          return setError('No document in memory. Please re-upload the file or check for a saved session.');
+        }
+
         const ctrl = new AbortController(); abortRef.current = ctrl;
         const opts = getTranslateOpts(ctrl.signal);
 
@@ -725,16 +886,45 @@
           let totalChunks = 0;
           const chapterChunks = chapters.map(c => { const ch = splitChunks(c.text, terminology.length); totalChunks += ch.length; if (c.title.trim()) totalChunks++; return ch });
 
+          // When resuming, recalculate done based on already-completed chapters to avoid >100%
+          if (isResume && startChapterIdx > 0) {
+            done = 0;
+            for (let r = 0; r < startChapterIdx; r++) {
+              done += chapterChunks[r].length;
+              if (chapters[r].title.trim()) done++;
+            }
+            setProgress(Math.min(100, Math.floor((done / totalChunks) * 100)));
+          }
+
           for (i = startChapterIdx; i < chapters.length; i++) {
             const ch = chapters[i];
             let title = ch.title;
             if (title.trim()) {
               setProgressLabel(`Translating title: "${title.substring(0, 30)}..."`)
-              try { title = await translateChunk(title, { ...opts, forceDict: false }) } catch (e) {
+              try {
+                // Use a minimal prompt for titles — full buildPrompt confuses AIs on short text
+                const titlePrompt = `Translate this title into ${opts.tgtLang}. Reply with ONLY the translated title, nothing else:\n${title}`;
+                const rawTitle = await translateWithRotation(titlePrompt, opts);
+                // Validate: if response looks like an instruction echo or is way too long, keep original
+                const looksLikeEcho = rawTitle.length > title.length * 5 || /provide|translate|terminology|guide|instructions|I have|I will/i.test(rawTitle);
+                if (rawTitle && rawTitle.trim() && !looksLikeEcho) {
+                  title = rawTitle.trim().replace(/^["']+|["']+$/g, ''); // strip quotes AI sometimes adds
+                }
+                // Inject translated title back into EPUB DOM if available
+                if (ch.doc) {
+                  const titleTag = ch.doc.querySelector('title');
+                  if (titleTag) titleTag.textContent = title;
+                  const h1 = ch.doc.querySelector('h1, h2, h3, h4, h5, h6');
+                  if (h1) h1.textContent = title;
+                  // Mark as processed immediately so exporters can see it even if content isn't done
+                  ch.isProcessed = true;
+                }
+              } catch (e) {
                 if (e.name === 'AbortError') throw e;
                 title += ` [Error: ${e.message}]`
               }
-              done++; setProgress(Math.floor((done / totalChunks) * 100));
+              ch.isCurrentlyTranslating = true;
+              done++; setProgress(Math.min(100, Math.floor((done / totalChunks) * 100)));
             }
             const chunks = chapterChunks[i];
             let content = '';
@@ -742,114 +932,183 @@
 
             // To preserve tree node structure for EPUBs, we translate text blocks individually
             // To be highly efficient and respect `concurrency` setting, we will batch requests.
-            if (ch.isEpub && ch.nodes && ch.nodes.length > 0) {
-              setProgressLabel(`Chapter ${i + 1}/${chapters.length}: translating ${ch.nodes.length} tree nodes...`);
+            try {
+              if (ch.isEpub && ch.nodes && ch.nodes.length > 0) {
+                setProgressLabel(`Chapter ${i + 1}/${chapters.length}: batching ${ch.nodes.length} nodes...`);
 
-              // Clear untranslated nodes in DOM immediately to prevent mixed-translation leaks in EPUB exports
-              ch.nodes.forEach(n => { n.node.nodeValue = '' });
+                // Clear untranslated nodes in DOM immediately to prevent mixed-translation leaks
+                ch.nodes.forEach(n => { n.node.nodeValue = '' });
 
-              let currentLiveNodes = new Array(ch.nodes.length).fill('');
-              nodeResults = await batchConcurrent(ch.nodes, async (nodeObj, idx) => {
-                const txt = nodeObj.originalText;
-                if (!txt.trim()) return txt;
+                // Translation cache for duplicate text within this chapter
+                const cache = new Map();
+                let currentLiveNodes = new Array(ch.nodes.length).fill('');
 
-                const translated = await translateChunk(txt, opts);
-                if (translated?.error) throw new Error(translated.error);
+                // Group nodes into batches
+                const batches = [];
+                let currentBatch = [];
+                let currentChars = 0;
+                ch.nodes.forEach((nodeObj, idx) => {
+                  const txt = nodeObj.originalText;
+                  if (!txt.trim()) {
+                    // Whitespace-only nodes — skip translation
+                    currentLiveNodes[idx] = txt;
+                    nodeObj.node.nodeValue = txt;
+                    return;
+                  }
+                  currentBatch.push({ nodeObj, idx, text: txt });
+                  currentChars += txt.length;
+                  if (currentBatch.length >= NODE_BATCH_SIZE || currentChars >= NODE_BATCH_MAX_CHARS) {
+                    batches.push(currentBatch);
+                    currentBatch = [];
+                    currentChars = 0;
+                  }
+                });
+                if (currentBatch.length > 0) batches.push(currentBatch);
 
-                nodeObj.node.nodeValue = translated;
-                currentLiveNodes[idx] = translated;
+                const nodesRequiringTranslation = batches.reduce((s, b) => s + b.length, 0);
+                setProgressLabel(`Chapter ${i + 1}/${chapters.length}: ${batches.length} batch(es) for ${nodesRequiringTranslation} nodes...`);
 
-                const activeCompiled = currentLiveNodes.filter(Boolean).join('\n\n');
-                window.activeChapter = { title: title || 'Chapter', content: activeCompiled };
-                setAssembledText(allParts.join('\n\n\n') + (allParts.length ? '\n\n\n' : '') + title + '\n\n' + activeCompiled);
+                // Process batches
+                for (let bi = 0; bi < batches.length; bi++) {
+                  if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+                  const batch = batches[bi];
 
-                done++; setProgress(Math.floor((done / totalChunks) * 100));
-                return translated;
-              }, concurrency * 2, opts.signal);
-
-              let compiledText = '';
-              let hasError = null;
-              ch.nodes.forEach((nodeObj, idx) => {
-                const rez = nodeResults[idx];
-                if (typeof rez !== 'string' && rez && rez.error) {
-                  hasError = rez;
-                } else if (rez && typeof rez === 'string' && rez.trim()) {
-                  nodeObj.node.nodeValue = rez;
-                  compiledText += rez + '\n\n';
-                }
-              });
-
-              content = compiledText.trim();
-              if (hasError) {
-                newChapters.push({ originalTitle: ch.title, title, content });
-                if (content.trim()) allParts.push(`${title}\n\n${content}`);
-                setTranslatedChapters([...newChapters]);
-                setAssembledText(allParts.join('\n\n\n').trim());
-                const err = new Error(hasError.error);
-                if (hasError.name) err.name = hasError.name;
-                throw err;
-              }
-            } else {
-              if (provider === 'gemini' && enableStreaming) {
-                setProgressLabel(`Chapter ${i + 1}/${chapters.length}: streaming chunks...`);
-                let activeCompiled = '';
-                for (let j = 0; j < chunks.length; j++) {
-                  let chunkResult = '';
-                  await streamGemini(chunks[j], {
-                    ...opts, prevContext, onChunk: t => {
-                      chunkResult += t;
-                      window.activeChapter = { title: title || 'Chapter', content: activeCompiled + chunkResult };
-                      setAssembledText(allParts.join('\n\n\n') + (allParts.length ? '\n\n\n' : '') + title + '\n\n' + activeCompiled + chunkResult);
+                  // Check cache first — resolve any entries that are already translated
+                  const uncached = [];
+                  batch.forEach(entry => {
+                    if (cache.has(entry.text)) {
+                      const cached = cache.get(entry.text);
+                      entry.nodeObj.node.nodeValue = cached;
+                      currentLiveNodes[entry.idx] = cached;
+                    } else {
+                      uncached.push(entry);
                     }
                   });
-                  content += chunkResult;
-                  activeCompiled += chunkResult;
-                  prevContext = content.slice(-500);
-                  done++; setProgress(Math.floor((done / totalChunks) * 100));
-                }
-              } else {
-                setProgressLabel(`Chapter ${i + 1}/${chapters.length}: translating ${chunks.length} chunk(s) in parallel...`);
-                let currentLiveChunks = new Array(chunks.length).fill('');
-                const results = await batchConcurrent(chunks, async (chunk, idx) => {
-                  const translated = await translateChunk(chunk, opts);
-                  if (translated?.error) throw new Error(translated.error);
-                  currentLiveChunks[idx] = translated;
-                  const activeCompiled = currentLiveChunks.filter(Boolean).join('\n\n');
+
+                  if (uncached.length > 0) {
+                    // Build batch prompt with numbered segments
+                    const segments = uncached.map(e => e.text);
+                    const batchPrompt = buildBatchPrompt(segments, opts.srcLang, opts.tgtLang, opts.glossary, opts.instructions);
+
+                    try {
+                      const response = await translateWithRotation(batchPrompt, { ...opts, forceDict: false });
+                      const parsed = parseBatchResponse(response, segments.length);
+
+                      uncached.forEach((entry, pi) => {
+                        let translated = parsed[pi];
+                        if (!translated || !translated.trim()) {
+                          // Fallback: keep original if parsing failed for this segment
+                          translated = entry.text;
+                          console.warn(`Batch parse miss for segment ${pi}, keeping original`);
+                        }
+                        entry.nodeObj.node.nodeValue = translated;
+                        currentLiveNodes[entry.idx] = translated;
+                        cache.set(entry.text, translated);
+                      });
+                    } catch (batchErr) {
+                      if (batchErr.name === 'AbortError') throw batchErr;
+                      // Fallback: translate individually if batch fails
+                      console.warn('Batch failed, falling back to individual:', batchErr.message);
+                      for (const entry of uncached) {
+                        if (opts.signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+                        try {
+                          const translated = await translateWithRotation(entry.text, opts);
+                          entry.nodeObj.node.nodeValue = translated;
+                          currentLiveNodes[entry.idx] = translated;
+                          cache.set(entry.text, translated);
+                        } catch (e2) {
+                          if (e2.name === 'AbortError') throw e2;
+                          entry.nodeObj.node.nodeValue = entry.text; // keep original on error
+                          currentLiveNodes[entry.idx] = entry.text;
+                        }
+                      }
+                    }
+                  }
+
+                  ch.isProcessed = true;
+                  done += batch.length;
+                  setProgress(Math.min(100, Math.floor((done / totalChunks) * 100)));
+                  const activeCompiled = currentLiveNodes.filter(Boolean).join('\n\n');
                   window.activeChapter = { title: title || 'Chapter', content: activeCompiled };
                   setAssembledText(allParts.join('\n\n\n') + (allParts.length ? '\n\n\n' : '') + title + '\n\n' + activeCompiled);
-                  done++; setProgress(Math.floor((done / totalChunks) * 100));
-                  return translated;
-                }, concurrency, opts.signal);
+                  setProgressLabel(`Chapter ${i + 1}/${chapters.length}: batch ${bi + 1}/${batches.length} done`);
+                }
 
-                let hasError = null;
-                const parts = results.map(r => {
-                  if (typeof r !== 'string' && r?.error) { hasError = r; return ''; }
-                  return typeof r === 'string' ? r : '';
-                });
-                content = parts.join('').replace(/\r\n/g, '\n').trim();
-                if (hasError) {
-                  newChapters.push({ originalTitle: ch.title, title, content });
-                  if (content.trim()) allParts.push(`${title}\n\n${content}`);
-                  setTranslatedChapters([...newChapters]);
-                  setAssembledText(allParts.join('\n\n\n').trim());
-                  const err = new Error(hasError.error);
-                  if (hasError.name) err.name = hasError.name;
-                  throw err;
+                let compiledText = currentLiveNodes.filter(Boolean).join('\n\n');
+                content = compiledText.trim();
+              } else {
+                if (provider === 'gemini' && enableStreaming) {
+                  setProgressLabel(`Chapter ${i + 1}/${chapters.length}: streaming chunks...`);
+                  let activeCompiled = '';
+                  for (let j = 0; j < chunks.length; j++) {
+                    let chunkResult = '';
+                    await streamGemini(chunks[j], {
+                      ...opts, prevContext, onChunk: t => {
+                        chunkResult += t;
+                        window.activeChapter = { title: title || 'Chapter', content: activeCompiled + chunkResult };
+                        setAssembledText(allParts.join('\n\n\n') + (allParts.length ? '\n\n\n' : '') + title + '\n\n' + activeCompiled + chunkResult);
+                      }
+                    });
+                    content += chunkResult;
+                    activeCompiled += chunkResult;
+                    prevContext = content.slice(-500);
+                    done++; setProgress(Math.min(100, Math.floor((done / totalChunks) * 100)));
+                  }
+                } else {
+                  setProgressLabel(`Chapter ${i + 1}/${chapters.length}: translating ${chunks.length} chunk(s) in parallel...`);
+                  let currentLiveChunks = new Array(chunks.length).fill('');
+                  const results = await batchConcurrent(chunks, async (chunk, idx) => {
+                    const translated = await translateChunk(chunk, opts);
+                    if (translated?.error) throw new Error(translated.error);
+                    currentLiveChunks[idx] = translated;
+                    const activeCompiled = currentLiveChunks.filter(Boolean).join('\n\n');
+                    window.activeChapter = { title: title || 'Chapter', content: activeCompiled };
+                    setAssembledText(allParts.join('\n\n\n') + (allParts.length ? '\n\n\n' : '') + title + '\n\n' + activeCompiled);
+                    done++; setProgress(Math.min(100, Math.floor((done / totalChunks) * 100)));
+                    return translated;
+                  }, concurrency, opts.signal);
+
+                  let hasError = null;
+                  const parts = results.map(r => {
+                    if (typeof r !== 'string' && r?.error) { hasError = r; return ''; }
+                    return typeof r === 'string' ? r : '';
+                  });
+                  content = parts.join('').replace(/\r\n/g, '\n').trim();
+                  if (hasError) {
+                    newChapters.push({ originalTitle: ch.title, title, content });
+                    if (content.trim()) allParts.push(`${title}\n\n${content}`);
+                    setTranslatedChapters([...newChapters]);
+                    setAssembledText(allParts.join('\n\n\n').trim());
+                    const err = new Error(hasError.error);
+                    if (hasError.name) err.name = hasError.name;
+                    throw err;
+                  }
                 }
               }
-            }
 
-            newChapters.push({ originalTitle: ch.title, title, content });
-            window.activeChapter = null;
-            if (content.trim()) allParts.push(`${title}\n\n${content}`);
-            setTranslatedChapters([...newChapters]);
-            setAssembledText(allParts.join('\n\n\n').trim());
+              newChapters.push({ originalTitle: ch.title, title, content });
+              window.activeChapter = null;
+              if (content.trim()) allParts.push(`${title}\n\n${content}`);
+              ch.translatedDoc = content; // Mark as translated for export filtering
+              setTranslatedChapters([...newChapters]);
+              setAssembledText(allParts.join('\n\n\n').trim());
 
-            await SessionDB.set('translationSessionEbook', { allParts, newChapters, currentChapterIndex: i + 1, doneChunks: done, prevContext });
-            setHasEbookSession(true);
-            if (ch.isEpub && window.currentEpubDocs) {
-              const matched = window.currentEpubDocs.find(d => d.cp === ch.chapterPath);
-              if (matched) matched.isProcessed = true;
+              await SessionDB.set('translationSessionEbook', {
+                allParts,
+                newChapters,
+                currentChapterIndex: i + 1,
+                doneChunks: done,
+                prevContext,
+                originalChapters: chapters.map(c => ({ title: c.title, text: c.text, chapterPath: c.chapterPath })),
+                baseFileName: baseFileName
+              });
+              setHasEbookSession(true);
+              if (ch.isEpub && window.currentEpubDocs) {
+                const matched = window.currentEpubDocs.find(d => d.cp === ch.chapterPath);
+                if (matched) matched.isProcessed = true;
+              }
+            } finally {
+              ch.isCurrentlyTranslating = false;
             }
           }
 
@@ -864,7 +1123,15 @@
           else toast('Cancelled. Session saved.', 'info')
 
           // Robust Session Persistence: Save even on crash/limit
-          await SessionDB.set('translationSessionEbook', { allParts, newChapters, currentChapterIndex: i, doneChunks: done, prevContext });
+          await SessionDB.set('translationSessionEbook', {
+            allParts,
+            newChapters,
+            currentChapterIndex: i,
+            doneChunks: done,
+            prevContext,
+            originalChapters: chapters?.map(c => ({ title: c.title, text: c.text, chapterPath: c.chapterPath })),
+            baseFileName: baseFileName
+          });
           setHasEbookSession(true);
 
           const final = allParts.join('\n\n\n').trim();
@@ -958,7 +1225,7 @@
                 }
 
                 if (nodes.length > 0) {
-                  chapters.push({ title, text: chapterText, nodes, filePath: cp, doc, isEpub: true });
+                  chapters.push({ title, text: chapterText, nodes, chapterPath: cp, doc, isEpub: true });
                   parsedDocs.push({ cp, doc });
                 }
               } catch (e) { console.error("Error parsing EPUB chapter", e); }
@@ -999,15 +1266,32 @@
       const onDragLeave = () => setIsDragOver(false);
       const onDrop = e => { e.preventDefault(); setIsDragOver(false); const f = e.dataTransfer.files[0]; if (f) processFile(f) };
 
-      // --- Download Handlers ---
       const getDownloadTargets = () => {
-        let targets = [...translatedChapters];
-        // If there's an active chapter in memory (even if not translating anymore), append it if not already there
-        if (window.activeChapter && (!targets.length || targets[targets.length - 1].content !== window.activeChapter.content)) {
-          targets.push(window.activeChapter);
+        // Prioritize multi-chapter data (from EPUB/file translations)
+        if (translatedChapters.length > 0) {
+          const targets = [...translatedChapters];
+          // Scan for chapters that have translated content but aren't in translatedChapters yet
+          if (window.currentEbookChapters) {
+            window.currentEbookChapters.forEach(ch => {
+              if (ch.translatedDoc && !targets.find(t => t.title === ch.title)) {
+                targets.push({ title: ch.title, content: ch.translatedDoc });
+              }
+            });
+          }
+          // Include currently active chapter if it has content (for live partial exports)
+          if (window.activeChapter && window.activeChapter.content?.trim()) {
+            const alreadyExists = targets.find(t => t.title === window.activeChapter.title);
+            if (!alreadyExists) targets.push(window.activeChapter);
+          }
+          return targets.sort((a, b) => {
+            const idxA = window.currentEbookChapters?.findIndex(c => c.title === a.title);
+            const idxB = window.currentEbookChapters?.findIndex(c => c.title === b.title);
+            return (idxA ?? 0) - (idxB ?? 0);
+          });
         }
-        if (!targets.length && assembledText.trim()) targets = [{ title: 'Partial Translation', content: assembledText }];
-        return targets;
+        // Fallback: single assembled text block (plain text translations)
+        if (assembledText) return [{ title: baseFileName || 'Translated Text', content: assembledText }];
+        return [];
       };
 
       const handleDownloadPDF = () => {
@@ -1015,19 +1299,58 @@
         if (!targets.length) return setError('No content to download.');
         setDownloadingPdf(true); setError('');
         try {
-          const { jsPDF } = window.jspdf; const doc = new jsPDF(); doc.setFont('Helvetica', 'normal');
-          const lh = 7, m = 10, mw = doc.internal.pageSize.width - 2 * m; let y = m;
+          const { jsPDF } = window.jspdf;
+          const doc = new jsPDF();
+          doc.setFont('Helvetica', 'normal');
+
+          doc.setProperties({ title: baseFileName || 'Translated Document' });
+
+          const lh = 10; // Increased line height
+          const m = 20; // Increased margin
+          const mw = doc.internal.pageSize.width - 2 * m;
+          let y = m + 10; // Start shifted down to avoid edge cut-off
+
           targets.forEach((ch, i) => {
-            if (i > 0) { doc.addPage(); y = m }
+            if (i > 0) { doc.addPage(); y = m + 5; }
 
-            let cleanTitle = ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
-            if (cleanTitle) { doc.setFontSize(16); doc.text(cleanTitle, m, y); y += lh * 2 }
+            const isMainSubtitle = (ch.title === 'Translated Document' || ch.title === 'Translated Text' || ch.title === baseFileName);
+            const cleanTitle = ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
 
+            // Only render title if it's NOT the redundant main document title
+            if (cleanTitle && !isMainSubtitle && cleanTitle.length < 500) {
+              doc.setFontSize(14);
+              doc.setFont('Helvetica', 'bold');
+              doc.setTextColor(0, 0, 0);
+              const lines = doc.splitTextToSize(cleanTitle, mw);
+              lines.forEach(line => {
+                if (y > doc.internal.pageSize.height - m) { doc.addPage(); y = m + 10; }
+                doc.text(line, m, y);
+                y += 10;
+              });
+              y += 5;
+            }
+
+            // Explicitly reset style after title to prevent leak
             doc.setFontSize(12);
+            doc.setFont('Helvetica', 'normal');
+            doc.setTextColor(0, 0, 0);
+
             let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
-            cleanContent.split(/\n\s*\n/).filter(p => p.trim()).forEach(p => { doc.splitTextToSize(p.trim(), mw).forEach(l => { if (y + lh > doc.internal.pageSize.height - m) { doc.addPage(); y = m } doc.text(l, m, y); y += lh }); y += lh * 0.5 })
+
+            // Handle both \n\n and single \n for better paragraph preservation
+            const paragraphs = cleanContent.split(/\n\s*\n/).filter(p => p.trim());
+            paragraphs.forEach(p => {
+              const lines = doc.splitTextToSize(p.trim(), mw);
+              lines.forEach(l => {
+                if (y + lh > doc.internal.pageSize.height - m) { doc.addPage(); y = m + 5; }
+                doc.text(l, m, y);
+                y += lh;
+              });
+              y += lh * 0.8; // Paragraph gap
+            });
           });
-          doc.save(`translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.pdf`); toast('PDF downloaded!')
+          doc.save(`translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.pdf`);
+          toast('PDF downloaded!');
         } catch (e) { setError(`PDF error: ${e.message}`) } finally { setDownloadingPdf(false) }
       };
 
@@ -1040,62 +1363,114 @@
             // True EPUB Structural Preservation Export
             const serializer = new XMLSerializer();
             // Filter to only include chapters that have been processed or are the current active one
-            window.currentEpubDocs.forEach(({ cp, doc, isProcessed }) => {
-              const isActive = window.activeChapter && window.currentEbookChapters?.find(c => c.chapterPath === cp && c.title === window.activeChapter.title);
-              if (isProcessed || isActive) {
+            window.currentEpubDocs.forEach(({ cp, doc }) => {
+              const ch = window.currentEbookChapters?.find(c => c.chapterPath === cp);
+              const isActive = ch?.isCurrentlyTranslating;
+              const isProcessed = ch?.isProcessed || !!ch?.translatedDoc;
+
+              if (isProcessed || isActive || ch?.translatedDoc) {
                 const xhtml = serializer.serializeToString(doc);
                 window.currentEpubZip.file(cp, xhtml);
               } else {
-                // Remove untranslated chapters from partial export for a clean "translated-only" book
-                window.currentEpubZip.remove(cp);
+                // For unvisited chapters, we can optionally mark them as [Untranslated]
+                // but usually keeping original is safer for structure.
+                // However, the user said "original language was in it instead of translation",
+                // which implies they expected those parts to be translated or at least handled.
+                // We will keep them as is but ensure the ones that SHOULD be translated ARE.
               }
             });
             const blob = await window.currentEpubZip.generateAsync({ type: "blob", mimeType: "application/epub+zip" });
             const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.epub`; a.click(); URL.revokeObjectURL(a.href);
             toast('True EPUB Export downloaded!');
           } else {
-            // Fallback to jEpub for raw text/pdf imports
-            const j = new window.jEpub();
-            // Critical patch: Force jEpub to see its dependencies
-            j.ejs = window.ejs;
-            j.jszip = window.jszip || window.JSZip;
+            // Build EPUB manually with JSZip (no jEpub dependency)
+            const JSZipLib = window.JSZip || window.jszip;
+            const zip = new JSZipLib();
+            const bookTitle = baseFileName || `Translated (${tgtLang})`;
+            const bookLang = tgtLang.split(/[-_ ]/)[0].toLowerCase();
+            const uuid = crypto.randomUUID();
 
-            j.init({
-              title: `Translated (${tgtLang})`,
-              author: 'Gemini Translator',
-              publisher: 'Gemini Translator',
-              description: `Translated to ${tgtLang}`,
-              lang: tgtLang.split(/[-_ ]/)[0].toLowerCase(),
-              version: '3.0',
-              uniqueIdentifier: `urn:uuid:${crypto.randomUUID()}`
-            });
+            // mimetype (must be first, uncompressed)
+            zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
 
-            // Add a clean Title/Info page as the first chapter
-            const titleHtml = `
-              <!DOCTYPE html>
-              <html xmlns="http://www.w3.org/1999/xhtml">
-              <head><meta charset="UTF-8"/><title>Title Page</title></head>
-              <body style="text-align: center; font-family: sans-serif; padding-top: 50px;">
-                <h1 style="color: #4f46e5;">${(typeof baseFileName !== 'undefined' ? baseFileName : '') || 'Translated Document'}</h1>
-                <p style="color: #6b7280; font-style: italic;">Translated from original text to ${tgtLang}</p>
-                <hr style="border: 0; border-top: 1px solid #e5e7eb; margin: 30px 0;"/>
-                <p style="font-size: 14px;">Generated by Gemini Translator</p>
-              </body>
-              </html>
-            `;
-            j.add('Title Page', titleHtml);
+            // META-INF/container.xml
+            zip.file('META-INF/container.xml', `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>`);
 
-            targets.forEach(ch => {
-              let cleanTitle = ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
-              if (!cleanTitle) cleanTitle = "Chapter";
-
+            // Build chapter files
+            const chapterFiles = targets.map((ch, i) => {
+              let cleanTitle = ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim() || `Chapter ${i + 1}`;
               let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
-              const ps = cleanContent.split(/\n\s*\n/).filter(p => p.trim());
-              const html = `<!DOCTYPE html><html xmlns="http://www.w3.org/1999/xhtml"><head><meta charset="UTF-8"/><title>${cleanTitle}</title></head><body><h1>${cleanTitle}</h1>${ps.map(p => `<p>${p.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`).join('\n')}</body></html>`;
-              j.add(cleanTitle, html);
+
+              // Split into paragraphs - try double newlines first, fall back to single
+              let ps = cleanContent.split(/\n\s*\n/).filter(p => p.trim());
+              if (ps.length <= 1 && cleanContent.includes('\n')) {
+                ps = cleanContent.split(/\n/).filter(p => p.trim());
+              }
+              if (ps.length === 0) ps = [cleanContent];
+
+              const escapedTitle = cleanTitle.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+              const bodyPs = ps.map(p => {
+                const escaped = p.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                return `    <p>${escaped}</p>`;
+              }).join('\n');
+
+              const fname = `ch${String(i + 1).padStart(3, '0')}.xhtml`;
+              const xhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="${bookLang}" lang="${bookLang}">
+<head><meta charset="UTF-8"/><title>${escapedTitle}</title>
+<style>body{font-family:serif;margin:1em;line-height:1.6}h1{font-size:1.4em;margin-bottom:0.8em}p{margin:0.4em 0;text-indent:1.5em}</style>
+</head>
+<body>
+  <h1>${escapedTitle}</h1>
+${bodyPs}
+</body>
+</html>`;
+              zip.file(`OEBPS/${fname}`, xhtml);
+              return { id: `ch${i + 1}`, fname, title: cleanTitle };
             });
 
-            const blob = await j.generate();
+            // content.opf
+            const manifestItems = chapterFiles.map(c => `    <item id="${c.id}" href="${c.fname}" media-type="application/xhtml+xml"/>`).join('\n');
+            const spineItems = chapterFiles.map(c => `    <itemref idref="${c.id}"/>`).join('\n');
+            const opf = `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">urn:uuid:${uuid}</dc:identifier>
+    <dc:title>${bookTitle.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</dc:title>
+    <dc:language>${bookLang}</dc:language>
+    <dc:creator>Gemini Translator</dc:creator>
+    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d{3}Z/, 'Z')}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${manifestItems}
+  </manifest>
+  <spine>
+${spineItems}
+  </spine>
+</package>`;
+            zip.file('OEBPS/content.opf', opf);
+
+            // nav.xhtml (table of contents)
+            const navItems = chapterFiles.map(c => `      <li><a href="${c.fname}">${c.title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</a></li>`).join('\n');
+            const nav = `<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head><meta charset="UTF-8"/><title>Table of Contents</title></head>
+<body>
+  <nav epub:type="toc"><h1>Table of Contents</h1>
+    <ol>
+${navItems}
+    </ol>
+  </nav>
+</body>
+</html>`;
+            zip.file('OEBPS/nav.xhtml', nav);
+
+            const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/epub+zip' });
             const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
             a.download = `translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.epub`;
             a.click();
@@ -1112,17 +1487,40 @@
         try {
           const { Document, Packer, Paragraph, TextRun, HeadingLevel, PageBreak } = window.docx;
           const sections = targets.map((ch, i) => {
+            const isMainSubtitle = (ch.title === 'Translated Document' || ch.title === 'Translated Text' || ch.title === baseFileName);
             let cleanTitle = ch.title.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
             let cleanContent = ch.content.replace(/\[True EPUB Structurally Preserved\]/g, '').trim();
 
-            return {
-              properties: i > 0 ? { page: { pageBreaks: { before: true } } } : {}, children: [
-                ...(cleanTitle ? [new Paragraph({ text: cleanTitle, heading: HeadingLevel.HEADING_1, spacing: { after: 200 } })] : []),
-                ...cleanContent.split(/\n\s*\n/).filter(p => p.trim()).map(p => new Paragraph({ children: [new TextRun(p.trim())], spacing: { after: 120 } }))
-              ]
+            const docxChildren = [];
+            if (cleanTitle && !isMainSubtitle && cleanTitle.length < 500) {
+              docxChildren.push(new Paragraph({
+                children: [new TextRun({ text: cleanTitle, bold: true, size: 28, color: "000000" })],
+                spacing: { before: 400, after: 300 }
+              }));
             }
+
+            // Split into paragraphs properly
+            const paragraphs = cleanContent.split(/\n\s*\n/).filter(p => p.trim());
+            paragraphs.forEach(paraText => {
+              // Replace internal single newlines with spaces for natural docx wrapping
+              const normalized = paraText.replace(/\n/g, ' ').trim();
+              docxChildren.push(new Paragraph({
+                children: [new TextRun(normalized)],
+                spacing: { after: 200, line: 360 } // 1.5 line spacing approx
+              }));
+            });
+
+            return {
+              properties: i > 0 ? { page: { breakType: window.docx.BreakType.PAGE } } : {},
+              children: docxChildren
+            };
           });
-          const doc = new Document({ sections }); const blob = await Packer.toBlob(doc);
+          const doc = new Document({
+            title: baseFileName || 'Translated Document',
+            creator: 'Gemini Translator',
+            sections
+          });
+          const blob = await Packer.toBlob(doc);
           const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `translated_${tgtLang.toLowerCase().replace(/\s/g, '-')}.docx`; a.click(); URL.revokeObjectURL(a.href); toast('DOCX downloaded!')
         } catch (e) { setError(`DOCX error: ${e.message}`) } finally { setDownloadingDocx(false) }
       };
@@ -1317,7 +1715,7 @@
                     (uploadingFile || isTranslating) ? ic(Loader2, 18) : ic(Upload, 18),
                     uploadingFile ? 'Processing...' : (isTranslating ? `Translating (${progress}%)` : 'Choose File (TXT, PDF, EPUB)')
                   ),
-                  hasEbookSession && !isTranslating ? btn({ onClick: () => handleTranslateEbook([], true), disabled, className: 'px-5 py-2.5 bg-red-500 text-white font-semibold rounded-lg shadow hover:bg-red-600 transition-all inline-flex items-center gap-2 disabled:opacity-50' },
+                  hasEbookSession && !isTranslating ? btn({ onClick: () => handleTranslateEbook(null, true), disabled, className: 'px-5 py-2.5 bg-red-500 text-white font-semibold rounded-lg shadow hover:bg-red-600 transition-all inline-flex items-center gap-2 disabled:opacity-50' },
                     ic(RotateCcw, 18), 'Resume Document'
                   ) : null
                 ),
@@ -1368,8 +1766,8 @@
                 h('span', { className: 'ml-2' }, isTranslating ? `Translating... (${progress}%)` : (hasTextSession ? 'Restart Translation' : 'Translate'))
               ),
               isTranslating && btn({ onClick: cancelTranslation, className: 'px-5 py-2.5 bg-gray-500 text-white font-semibold rounded-full shadow hover:bg-gray-600 transition-all flex items-center gap-2', 'aria-label': 'Pause translation' }, ic(Square, 18), 'Pause'),
-              isTranslating && h('div', { className: 'flex flex-wrap justify-center items-center gap-2 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-full border border-slate-200 dark:border-slate-700' },
-                h('span', { className: 'hidden md:inline text-xs font-bold text-slate-500 dark:text-slate-400 pl-3 pr-1 uppercase tracking-wider' }, 'Partial:'),
+              (isTranslating || assembledText || translatedChapters.length > 0) && h('div', { className: 'flex flex-wrap justify-center items-center gap-2 bg-slate-100 dark:bg-slate-800 p-1.5 rounded-full border border-slate-200 dark:border-slate-700' },
+                h('span', { className: 'hidden md:inline text-xs font-bold text-slate-500 dark:text-slate-400 pl-3 pr-1 uppercase tracking-wider' }, 'Export:'),
                 btn({ onClick: () => copyText(assembledText).then(() => toast('Copied!')), className: 'px-3 py-1.5 bg-blue-500 text-white font-semibold rounded-full shadow-sm hover:bg-blue-600 transition-all flex items-center gap-1 text-xs', title: 'Copy Partial' }, ic(Copy, 14), 'Copy'),
                 btn({ onClick: handleDownloadEPUB, disabled: downloadingEpub, className: 'px-3 py-1.5 bg-teal-500 text-white font-semibold rounded-full shadow-sm hover:bg-teal-600 transition-all flex items-center gap-1 text-xs disabled:opacity-50', title: 'Download Partial EPUB' }, downloadingEpub ? ic(Loader2, 14) : ic(Download, 14), 'EPUB'),
                 btn({ onClick: handleDownloadPDF, disabled: downloadingPdf, className: 'px-3 py-1.5 bg-red-500 text-white font-semibold rounded-full shadow-sm hover:bg-red-600 transition-all flex items-center gap-1 text-xs disabled:opacity-50', title: 'Download Partial PDF' }, downloadingPdf ? ic(Loader2, 14) : ic(Download, 14), 'PDF'),
@@ -1456,62 +1854,78 @@
               secHeader('Settings & API Keys', Settings, showSettings, () => setShowSettings(!showSettings)),
               h('div', { className: `collapsible ${showSettings ? 'open' : ''}` },
                 h('div', { className: 'p-4 space-y-4' },
-                  // Dynamic Active Provider Header
+                  // Dynamic Active Provider Key Manager
                   h('div', { className: 'p-4 bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-200 dark:border-indigo-800 rounded-xl mb-6 shadow-sm' },
-                    h('p', { className: 'text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider mb-2 flex items-center gap-2' }, ic(Zap, 14), `Active: ${provider.toUpperCase()}`),
-                    provider === 'gemini' && h('div', { className: 'space-y-3' },
-                      h('div', { className: 'relative' },
-                        h('input', { type: showGeminiKey ? 'text' : 'password', value: geminiKeyInput, onChange: e => setGeminiKeyInput(e.target.value), placeholder: 'Gemini API Key...', className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
-                        btn({ onClick: () => setShowGeminiKey(!showGeminiKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400' }, ic(showGeminiKey ? EyeOff : Eye, 16))
-                      ),
-                      h('div', { className: 'flex gap-2' },
-                        btn({ onClick: saveGeminiKey, className: 'px-4 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 shadow-sm transition-all' }, 'Save Gemini Key'),
-                        btn({ onClick: clearGeminiKey, className: 'px-4 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 shadow-sm transition-all' }, 'Clear')
-                      )
+                    h('div', { className: 'flex items-center justify-between mb-4' },
+                      h('p', { className: 'text-xs font-bold text-indigo-600 dark:text-indigo-400 uppercase tracking-wider flex items-center gap-2' }, ic(Zap, 14), `${provider.toUpperCase()} Key Profiles`),
+                      btn({ onClick: () => addApiKey(provider), className: 'px-3 py-1 bg-indigo-600 text-white text-[10px] font-bold rounded-lg hover:bg-indigo-700 transition-all shadow-sm flex items-center gap-1' }, ic(Zap, 12), 'Add Key')
                     ),
-                    ['openai', 'claude', 'deepl'].includes(provider) && h('div', { className: 'space-y-3' },
-                      h('div', { className: 'relative' },
-                        h('input', { type: provider === 'openai' ? (showOpenaiKey ? 'text' : 'password') : provider === 'claude' ? (showClaudeKey ? 'text' : 'password') : (showDeeplKey ? 'text' : 'password'), value: provider === 'openai' ? openaiKeyInput : provider === 'claude' ? claudeKeyInput : deeplKeyInput, onChange: e => provider === 'openai' ? setOpenaiKeyInput(e.target.value) : provider === 'claude' ? setClaudeKeyInput(e.target.value) : setDeeplKeyInput(e.target.value), placeholder: `${provider.toUpperCase()} API Key...`, className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
-                        btn({ onClick: () => provider === 'openai' ? setShowOpenaiKey(!showOpenaiKey) : provider === 'claude' ? setShowClaudeKey(!showClaudeKey) : setShowDeeplKey(!showDeeplKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400' }, ic((provider === 'openai' ? showOpenaiKey : provider === 'claude' ? showClaudeKey : showDeeplKey) ? EyeOff : Eye, 16))
-                      ),
-                      h('div', { className: 'flex gap-2' },
-                        btn({ onClick: provider === 'openai' ? saveOpenaiKey : provider === 'claude' ? saveClaudeKey : saveDeeplKey, className: 'px-4 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 shadow-sm transition-all' }, `Save ${provider.toUpperCase()} Key`),
-                        btn({ onClick: provider === 'openai' ? clearOpenaiKey : provider === 'claude' ? clearClaudeKey : clearDeeplKey, className: 'px-4 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 shadow-sm transition-all' }, 'Clear')
-                      )
-                    ),
-                    provider === 'libre' && h('div', { className: 'space-y-3' },
+
+                    provider === 'libre' && h('div', { className: 'mb-4 space-y-3' },
                       h('div', { className: 'flex gap-2' },
                         h('input', { type: 'text', value: libreUrl, onChange: e => setLibreUrl(e.target.value), placeholder: 'LibreTranslate URL...', className: 'w-full p-2.5 border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
                         btn({ onClick: saveLibreUrl, className: 'px-4 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 shadow-sm transition-all' }, 'Save URL'),
                         btn({ onClick: clearLibreUrl, className: 'px-4 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 shadow-sm transition-all' }, 'Reset')
-                      ),
-                      h('div', { className: 'relative' },
-                        h('input', { type: showLibreKey ? 'text' : 'password', value: libreKeyInput, onChange: e => setLibreKeyInput(e.target.value), placeholder: 'LibreTranslate API Key (Optional)...', className: 'w-full p-2.5 pr-10 border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500' }),
-                        btn({ onClick: () => setShowLibreKey(!showLibreKey), className: 'absolute right-2 top-1/2 -translate-y-1/2 text-gray-400' }, ic(showLibreKey ? EyeOff : Eye, 16))
-                      ),
-                      h('div', { className: 'flex gap-2' },
-                        btn({ onClick: saveLibreKey, className: 'px-4 py-1.5 bg-green-500 text-white text-xs font-bold rounded-lg hover:bg-green-600 shadow-sm transition-all' }, 'Save Libre Key'),
-                        btn({ onClick: clearLibreKey, className: 'px-4 py-1.5 bg-red-500 text-white text-xs font-bold rounded-lg hover:bg-red-600 shadow-sm transition-all' }, 'Clear')
                       )
+                    ),
+
+                    h('div', { className: 'space-y-3 max-h-80 overflow-y-auto pr-1 custom-scrollbar' },
+                      (apiKeysByProvider[provider] || []).length === 0 ?
+                        h('p', { className: 'text-center text-xs text-gray-400 py-4 italic' }, 'No keys added yet. Click "Add Key" to start.') :
+                        apiKeysByProvider[provider].map(k => h('div', { key: k.id, className: `p-3 rounded-xl border transition-all ${activeKeyIds[provider] === k.id ? 'border-indigo-500 bg-white dark:bg-gray-800 shadow-sm' : 'border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-gray-900/50'}` },
+                          h('div', { className: 'flex items-center gap-2 mb-2' },
+                            h('div', { className: `w-2 h-2 rounded-full ${k.key ? 'bg-green-500' : 'bg-gray-300'}` }),
+                            h('input', {
+                              type: 'text',
+                              value: k.name,
+                              onChange: e => updateApiKey(provider, k.id, 'name', e.target.value),
+                              placeholder: 'Profile Name (e.g. Work Key)...',
+                              className: 'flex-1 bg-transparent border-none p-0 text-xs font-bold text-gray-700 dark:text-gray-200 focus:ring-0 placeholder-gray-400'
+                            }),
+                            activeKeyIds[provider] !== k.id && btn({
+                              onClick: () => setActiveKey(provider, k.id),
+                              className: 'px-2 py-1 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold rounded-lg hover:bg-indigo-200 transition-all'
+                            }, 'Set Active'),
+                            btn({ onClick: () => deleteApiKey(provider, k.id), className: 'p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors' }, ic(Trash2, 14))
+                          ),
+                          h('div', { className: 'relative group' },
+                            h('input', {
+                              type: showKeys[k.id] ? 'text' : 'password',
+                              value: k.key,
+                              onChange: e => updateApiKey(provider, k.id, 'key', e.target.value.trim()),
+                              placeholder: `${provider.toUpperCase()} API Key...`,
+                              className: 'w-full p-2 pr-24 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-xs focus:ring-1 focus:ring-indigo-500 font-mono'
+                            }),
+                            h('div', { className: 'absolute right-1 top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-60 group-hover:opacity-100 transition-opacity' },
+                              btn({ onClick: () => setShowKeys(p => ({ ...p, [k.id]: !p[k.id] })), className: 'p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors', title: 'Toggle Visibility' }, ic(showKeys[k.id] ? EyeOff : Eye, 14)),
+                              btn({ onClick: () => { if (k.key) copyText(k.key).then(() => toast('Key copied!')) }, className: 'p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors', title: 'Copy Key' }, ic(Copy, 14)),
+                              btn({ onClick: async () => { try { const t = await navigator.clipboard.readText(); updateApiKey(provider, k.id, 'key', t.trim()); toast('Key pasted!') } catch (e) { toast('Paste failed: ' + e.message, 'error') } }, className: 'p-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded transition-colors', title: 'Paste Key' }, ic(Clipboard, 14)),
+                              btn({ onClick: () => confirmAction('Clear this API key?', () => updateApiKey(provider, k.id, 'key', '')), className: 'p-1 hover:bg-red-50 dark:hover:bg-red-900/20 text-red-500 rounded transition-colors', title: 'Clear Key' }, ic(X, 14))
+                            )
+                          )
+                        ))
                     )
                   ),
 
                   h('p', { className: 'text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mt-6' }, 'Provider Status'),
                   h('div', { className: 'grid grid-cols-2 gap-3 mt-2' },
                     [
-                      { id: 'gemini', label: 'Gemini', key: geminiKey },
-                      { id: 'openai', label: 'OpenAI', key: openaiKey },
-                      { id: 'claude', label: 'Claude', key: claudeKey },
-                      { id: 'deepl', label: 'DeepL', key: deeplKey },
-                      { id: 'libre', label: 'Libre', key: libreKey }
-                    ].map(p => h('div', {
-                      key: p.id,
-                      onClick: () => { setProvider(p.id); toast(`Switched to ${p.label}`) },
-                      className: `flex items-center justify-between p-3 border rounded-xl transition-all cursor-pointer group hover:border-indigo-400 hover:bg-indigo-50/50 dark:hover:bg-indigo-900/10 ${provider === p.id ? 'border-indigo-500 bg-indigo-500/5 shadow-inner' : 'border-gray-200 dark:border-gray-800'}`
-                    },
-                      h('span', { className: `text-xs font-semibold ${provider === p.id ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-600 dark:text-gray-400 group-hover:text-indigo-500'}` }, p.label),
-                      h('div', { className: `w-2 h-2 rounded-full ${p.key ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.3)]' : 'bg-gray-300 dark:bg-gray-700'}` })
-                    ))
+                      { id: 'gemini', label: 'Gemini', providerKeys: apiKeysByProvider.gemini },
+                      { id: 'openai', label: 'OpenAI', providerKeys: apiKeysByProvider.openai },
+                      { id: 'claude', label: 'Claude', providerKeys: apiKeysByProvider.claude },
+                      { id: 'deepl', label: 'DeepL', providerKeys: apiKeysByProvider.deepl },
+                      { id: 'libre', label: 'Libre', providerKeys: apiKeysByProvider.libre }
+                    ].map(p => {
+                      const hasActiveKey = p.providerKeys?.some(k => k.id === activeKeyIds[p.id] && k.key);
+                      return h('div', {
+                        key: p.id,
+                        onClick: () => { setProvider(p.id); toast(`Switched to ${p.label}`) },
+                        className: `flex items-center justify-between p-3 border rounded-xl transition-all cursor-pointer group hover:border-indigo-400 hover:bg-indigo-50/50 dark:hover:bg-indigo-900/10 ${provider === p.id ? 'border-indigo-500 bg-indigo-500/5 shadow-inner' : 'border-gray-200 dark:border-gray-800'}`
+                      },
+                        h('span', { className: `text-xs font-semibold ${provider === p.id ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-600 dark:text-gray-400 group-hover:text-indigo-500'}` }, p.label),
+                        h('div', { className: `w-2 h-2 rounded-full ${hasActiveKey ? 'bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.3)]' : 'bg-gray-300 dark:bg-gray-700'}` })
+                      );
+                    })
                   )
                 )
               )

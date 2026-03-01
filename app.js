@@ -7,6 +7,7 @@ window.initAppJs = function () {
     const iconSun = document.getElementById('icon-sun');
     const iconMoon = document.getElementById('icon-moon');
 
+    /* Theme logic is now handled by React in index.html to avoid conflicts
     function applyTheme(isDark) {
         if (isDark) {
             document.documentElement.classList.add('dark');
@@ -19,16 +20,13 @@ window.initAppJs = function () {
         }
     }
 
-    // Initial load check
     if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
         applyTheme(true);
     } else {
         applyTheme(false);
     }
 
-    // OS level theme change listener
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', e => {
-        // Only update automatically if the user hasn't explicitly set a preference
         if (!('theme' in localStorage)) {
             applyTheme(e.matches);
         }
@@ -46,6 +44,7 @@ window.initAppJs = function () {
             iconMoon?.classList.remove('hidden');
         }
     });
+    */
 
     // --- Tab Logic ---
     const tabSplit = document.getElementById('tab-split');
